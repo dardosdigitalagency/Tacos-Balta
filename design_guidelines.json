@@ -1,0 +1,100 @@
+{
+  "theme": "LIGHT",
+  "archetype": "4 (Swiss & High-Contrast) - Modified with brand green tones",
+  "typography": {
+    "headings": {
+      "fontFamily": "'Cabinet Grotesk', sans-serif",
+      "weights": ["800", "900"],
+      "usage": "Use for massive prices, totals, and the 'Cobrar Orden' button. Letter-spacing tight."
+    },
+    "body": {
+      "fontFamily": "'Manrope', sans-serif",
+      "weights": ["400", "500", "700"],
+      "usage": "Use for product names, labels, and admin table data."
+    },
+    "scale": {
+      "h1": "text-5xl sm:text-6xl tracking-tighter font-black",
+      "h2": "text-3xl sm:text-4xl tracking-tight font-extrabold",
+      "h3": "text-2xl sm:text-3xl tracking-tight font-bold",
+      "body": "text-lg",
+      "small": "text-sm uppercase tracking-widest font-bold"
+    }
+  },
+  "colors": {
+    "background": {
+      "primary": "#F4F4F5",
+      "secondary": "#FFFFFF"
+    },
+    "text": {
+      "primary": "#09090B",
+      "secondary": "#52525B",
+      "accent": "#006400",
+      "inverse": "#FFFFFF"
+    },
+    "brand": {
+      "primary": "#006400",
+      "hover": "#228B22",
+      "muted": "#EcfDF5"
+    },
+    "borders": {
+      "default": "#E4E4E7",
+      "active": "#006400"
+    },
+    "status": {
+      "success": "#228B22",
+      "destructive": "#DC2626"
+    }
+  },
+  "visual_enhancers": {
+    "surfaces": "Use sharp borders (rounded-md max) and high-contrast lines. No soft shadows. Rely on 2px solid borders for active states.",
+    "effects": "Since there is no hover, active states must be immediate. Use bg-green-900 text-white for selected payment methods. Use 2px #006400 border for unselected but actionable items.",
+    "icons": "NO EXTERNAL ICONS. Rely purely on typography (e.g., massive '+' and '-' symbols, uppercase labels)."
+  },
+  "components": {
+    "buttons": {
+      "primary": "Massive height (min-h-[5rem] / h-20), bg-[#006400] text-white font-black text-2xl uppercase tracking-wider. Active state: bg-[#228B22].",
+      "secondary": "h-16 border-2 border-[#006400] text-[#006400] font-bold text-lg. Active state: bg-[#006400] text-white.",
+      "quantity": "Square blocks w-16 h-16 flex items-center justify-center bg-gray-100 text-3xl font-black active:bg-gray-300 rounded-md"
+    },
+    "cards": {
+      "product": "bg-white p-4 flex items-center justify-between border-b-2 border-gray-100 active:bg-gray-50"
+    },
+    "inputs": {
+      "text": "h-16 border-2 border-gray-200 px-4 text-xl font-bold focus:border-[#006400] focus:ring-0 outline-none rounded-md"
+    }
+  },
+  "layouts": {
+    "pos_screen": {
+      "structure": "Flex column, h-screen overflow-hidden.",
+      "list_area": "Flex-1 overflow-y-auto pb-4 pt-4 px-4 space-y-2 bg-[#F4F4F5].",
+      "cart_panel": "Fixed bottom, w-full bg-white border-t-4 border-[#006400] p-4 flex flex-col gap-4 shadow-[0_-10px_40px_rgba(0,0,0,0.1)] z-50."
+    },
+    "admin_screen": {
+      "structure": "Container mx-auto p-4 md:p-8 space-y-8 bg-[#F4F4F5] min-h-screen",
+      "grid": "grid-cols-1 md:grid-cols-3 gap-6"
+    }
+  },
+  "motion": {
+    "rules": "Zero hover animations. Only instant state changes or extremely fast active transforms (scale 0.98 on press) for tactile feedback."
+  },
+  "accessibility": {
+    "touch_targets": "Minimum 64px height for all interactive elements.",
+    "contrast": "Ensure green #006400 on white passes WCAG AAA for large text.",
+    "test_ids": "CRITICAL: All buttons, inputs, and interactive elements MUST have data-testid attributes (e.g., data-testid='btn-add-taco', data-testid='input-tip')."
+  },
+  "media_urls": {
+    "rules": "No external images or icons requested. Pure typographical UI."
+  },
+  "instructions_to_main_agent": [
+    "Build standard .js React components. NO TYPESCRIPT.",
+    "Use Tailwind CSS for styling.",
+    "POS View: Implement a sticky bottom panel for the cart and checkout button that stays visible while scrolling the product list.",
+    "Product Item: Render vertically, each with name and a quantity control block (+, number, -).",
+    "Quantity Control: The number must be an editable text input to allow fast typing for large orders.",
+    "Payment Selector: 3 large buttons (Efectivo, Transferencia, Tarjeta). If Transferencia or Tarjeta is selected, show an input field for PROPINA (Tip).",
+    "Admin View: Create a dashboard with 3 Chart.js graphs (Products bar chart, Sales over time line/bar, Payment method pie chart).",
+    "Admin Table: Show a simple data table of today's sales and an editable price list.",
+    "Ensure total sums in the POS cart are massive (text-5xl or text-6xl) using the 'Cabinet Grotesk' font stack if possible, otherwise high-weight sans.",
+    "DO NOT USE LUICIDE ICONS OR ANY EXTERNAL ICONS. Use pure typography (e.g. text for '+', '-', 'Efectivo')."
+  ]
+}
