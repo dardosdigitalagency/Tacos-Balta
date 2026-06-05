@@ -298,11 +298,6 @@ function CartPanel({
               Subtotal {formatMXN(subtotal)} · Propina {formatMXN(tip)}
             </p>
           )}
-          {tip === 0 && (
-            <span className="hidden" data-testid="cart-subtotal">
-              {formatMXN(subtotal)}
-            </span>
-          )}
         </div>
         <p
           className="font-display text-3xl sm:text-4xl font-black text-[#006400] leading-none"

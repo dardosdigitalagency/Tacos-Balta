@@ -24,6 +24,14 @@ Sistema POS mobile-first para taquería con:
 - Polling cada 5 s
 - Sin IVA aplicado; propina separada en dashboard
 
+## Iteración 2 (Feb 2026)
+- **Login obligatorio** con sesión por rol (RootRedirect): admin → /admin, cashier → /pos
+- **6 usuarios sembrados**: 1 admin + 5 cajeros (uno por sucursal)
+- **5 sucursales**: Valle Dorado, Mezcalitos, San Vicente, 3.14, San José
+- Ventas guardan `sucursal` y `cashier` para trazabilidad
+- POS **compacto**: panel inferior reducido, nombres completos sin truncar, etiqueta y color azul para `BEBIDA` vs verde para `COMIDA`
+- Admin: selector de fecha (calendario shadcn), filtro por sucursal, propinas detalladas por método (tarjeta vs transferencia), gráfica de ventas por sucursal, tab `Usuarios` para editar contraseñas y sucursal asignada
+
 ## Backlog / Próximas mejoras
 - P1: Reportes históricos (semana / mes), exportar CSV de ventas
 - P1: Cierre de caja y arqueo
