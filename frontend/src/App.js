@@ -1,56 +1,42 @@
-import { useEffect } from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
-import { HOME } from "@/constants/testIds";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Toaster } from "sonner";
+import POS from "@/pages/POS";
+import AdminLogin from "@/pages/AdminLogin";
+import AdminDashboard from "@/pages/AdminDashboard";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+function RequireAuth({ children }) {
+  const isAuth = localStorage.getItem("tacos_admin_auth") === "1";
+  return isAuth ? children : <Navigate to="/admin/login" replace />;
+}
 
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
-
+export default function App() {
   return (
-    <div>
-      <header className="App-header">
-        <a
-          data-testid={HOME.emergentLink}
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
-
-function App() {
-  return (
-    <div className="App">
+    <div className="App min-h-screen bg-[#F4F4F5]">
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
+          <Route path="/" element={<POS />} />
+          <Route path="/admin/login" element={<AdminLogin />} />
+          <Route
+            path="/admin"
+            element={
+              <RequireAuth>
+                <AdminDashboard />
+              </RequireAuth>
+            }
+          />
         </Routes>
       </BrowserRouter>
+      <Toaster
+        position="top-center"
+        toastOptions={{
+          style: {
+            fontFamily: "Manrope, sans-serif",
+            fontWeight: 700,
+            border: "2px solid #006400",
+          },
+        }}
+      />
     </div>
   );
 }
-
-export default App;

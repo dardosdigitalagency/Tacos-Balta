@@ -1,34 +1,27 @@
-.App-logo {
-    height: 40vmin;
-    pointer-events: none;
+/* Tacos POS – Global tweaks (Tailwind handles the rest) */
+.App {
+  font-family: "Manrope", -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-    .App-logo {
-        animation: App-logo-spin infinite 20s linear;
-    }
+/* Disable text selection for buttons – feels more native on mobile */
+button, .no-select {
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  user-select: none;
 }
 
-.App-header {
-    background-color: #0f0f10;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-size: calc(10px + 2vmin);
-    color: white;
+/* Number input – hide arrows */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
 }
 
-.App-link {
-    color: #61dafb;
-}
-
-@keyframes App-logo-spin {
-    from {
-        transform: rotate(0deg);
-    }
-    to {
-        transform: rotate(360deg);
-    }
+/* Tactile feedback */
+.tap-scale:active {
+  transform: scale(0.97);
+  transition: transform 0.05s ease-out;
 }
