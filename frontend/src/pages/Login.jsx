@@ -1,9 +1,14 @@
+/**
+ * Pantalla de login unificada.
+ * Si rol = admin -> redirige a /admin
+ * Si rol = cashier -> redirige a /pos
+ */
 import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { login } from "@/lib/auth";
 
-export default function AdminLogin() {
+export default function Login() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -13,12 +18,15 @@ export default function AdminLogin() {
     e.preventDefault();
     setLoading(true);
     try {
-      await api.post("/admin/login", { username, password });
-      localStorage.setItem("tacos_admin_auth", "1");
-      toast.success("Bienvenido");
-      navigate("/admin", { replace: true });
+      const session = await login(username.trim(), password);
+      toast.success(`Hola, ${session.user.username}`);
+      if (session.user.role === "admin") {
+        navigate("/admin", { replace: true });
+      } else {
+        navigate("/pos", { replace: true });
+      }
     } catch {
-      toast.error("Credenciales inválidas");
+      toast.error("Usuario o contraseña incorrectos");
     } finally {
       setLoading(false);
     }
@@ -29,15 +37,16 @@ export default function AdminLogin() {
       <form
         onSubmit={submit}
         className="w-full max-w-md bg-white border-t-4 border-[#006400] rounded-md p-6 space-y-4"
-        data-testid="admin-login-form"
+        data-testid="login-form"
       >
         <div>
           <p className="text-xs uppercase tracking-widest font-bold text-zinc-500">
-            Acceso
+            Punto de Venta
           </p>
-          <h1 className="font-display text-4xl font-black text-[#006400]">
-            ADMIN
+          <h1 className="font-display text-5xl font-black text-[#006400] leading-none">
+            TAQUERÍA
           </h1>
+          <p className="text-sm text-zinc-500 mt-2">Inicia sesión para continuar</p>
         </div>
 
         <div>
@@ -47,11 +56,13 @@ export default function AdminLogin() {
           <input
             data-testid="input-username"
             autoFocus
+            autoComplete="username"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             className="mt-1 w-full h-14 px-3 text-lg font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
           />
         </div>
+
         <div>
           <label className="text-xs uppercase tracking-widest font-bold text-zinc-500">
             Contraseña
@@ -59,6 +70,7 @@ export default function AdminLogin() {
           <input
             data-testid="input-password"
             type="password"
+            autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             className="mt-1 w-full h-14 px-3 text-lg font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
@@ -73,14 +85,6 @@ export default function AdminLogin() {
         >
           {loading ? "Entrando…" : "Entrar"}
         </button>
-
-        <Link
-          to="/"
-          data-testid="back-to-pos"
-          className="block text-center text-sm uppercase tracking-widest font-bold text-zinc-500"
-        >
-          ← Volver al POS
-        </Link>
       </form>
     </div>
   );

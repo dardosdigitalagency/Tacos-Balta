@@ -2,12 +2,25 @@ import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
 import POS from "@/pages/POS";
-import AdminLogin from "@/pages/AdminLogin";
+import Login from "@/pages/Login";
 import AdminDashboard from "@/pages/AdminDashboard";
+import { getSession, isAdmin } from "@/lib/auth";
 
 function RequireAuth({ children }) {
-  const isAuth = localStorage.getItem("tacos_admin_auth") === "1";
-  return isAuth ? children : <Navigate to="/admin/login" replace />;
+  const s = getSession();
+  if (!s) return <Navigate to="/" replace />;
+  return children;
+}
+
+function RequireAdmin({ children }) {
+  if (!isAdmin()) return <Navigate to="/" replace />;
+  return children;
+}
+
+function RootRedirect() {
+  const s = getSession();
+  if (!s) return <Login />;
+  return <Navigate to={s.user.role === "admin" ? "/admin" : "/pos"} replace />;
 }
 
 export default function App() {
@@ -15,16 +28,24 @@ export default function App() {
     <div className="App min-h-screen bg-[#F4F4F5]">
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<POS />} />
-          <Route path="/admin/login" element={<AdminLogin />} />
+          <Route path="/" element={<RootRedirect />} />
           <Route
-            path="/admin"
+            path="/pos"
             element={
               <RequireAuth>
-                <AdminDashboard />
+                <POS />
               </RequireAuth>
             }
           />
+          <Route
+            path="/admin"
+            element={
+              <RequireAdmin>
+                <AdminDashboard />
+              </RequireAdmin>
+            }
+          />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
       <Toaster

@@ -53,6 +53,7 @@ class Product(BaseModel):
     price: float
     sort_order: int = 0
     active: bool = True
+    category: str = "comida"   # "comida" | "bebida"
 
 
 class ProductUpdate(BaseModel):
@@ -60,12 +61,14 @@ class ProductUpdate(BaseModel):
     price: Optional[float] = None
     sort_order: Optional[int] = None
     active: Optional[bool] = None
+    category: Optional[str] = None
 
 
 class ProductCreate(BaseModel):
     name: str
     price: float
     sort_order: int = 999
+    category: str = "comida"
 
 
 class CartItem(BaseModel):
@@ -79,17 +82,37 @@ class SaleCreate(BaseModel):
     items: List[CartItem]
     payment_method: Literal['efectivo', 'transferencia', 'tarjeta']
     tip: float = 0.0
+    sucursal: str
+    cashier: Optional[str] = None
 
 
 class Sale(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     items: List[CartItem]
-    subtotal: float          # suma items (sin propina, sin IVA)
+    subtotal: float
     tip: float = 0.0
-    total: float             # subtotal + tip
+    total: float
     payment_method: str
-    created_at: str          # ISO string (UTC)
+    sucursal: str
+    cashier: Optional[str] = None
+    created_at: str
+
+
+class User(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    username: str
+    password: str
+    role: Literal['admin', 'cashier'] = 'cashier'
+    sucursal: Optional[str] = None
+    active: bool = True
+
+
+class UserUpdate(BaseModel):
+    password: Optional[str] = None
+    sucursal: Optional[str] = None
+    active: Optional[bool] = None
 
 
 class LoginRequest(BaseModel):
@@ -100,26 +123,49 @@ class LoginRequest(BaseModel):
 # ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------
-def today_mx_range_utc():
-    """Devuelve (start_utc_iso, end_utc_iso) para el día actual en Mexico City."""
-    now_mx = datetime.now(MX_TZ)
-    start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
+def date_range_utc(date_str: Optional[str] = None):
+    """Devuelve (start_utc_iso, end_utc_iso) para el día indicado en MX TZ.
+    Si date_str es None devuelve el día de hoy MX. date_str en formato YYYY-MM-DD."""
+    if date_str:
+        try:
+            d = datetime.strptime(date_str, "%Y-%m-%d")
+            start_mx = d.replace(tzinfo=MX_TZ)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Fecha inválida (YYYY-MM-DD)")
+    else:
+        now_mx = datetime.now(MX_TZ)
+        start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
     end_mx = start_mx + timedelta(days=1)
     return start_mx.astimezone(timezone.utc).isoformat(), end_mx.astimezone(timezone.utc).isoformat()
 
 
+def today_mx_range_utc():
+    return date_range_utc(None)
+
+
+SUCURSALES = ["Valle Dorado", "Mezcalitos", "San Vicente", "3.14", "San Jose"]
+
 DEFAULT_PRODUCTS = [
-    {"name": "Tacos",                "price": 30,  "sort_order": 1},
-    {"name": "Taco con Queso",       "price": 40,  "sort_order": 2},
-    {"name": "Quesadilla Sencilla",  "price": 60,  "sort_order": 3},
-    {"name": "Quesadilla con Carne", "price": 90,  "sort_order": 4},
-    {"name": "Volcanes",             "price": 40,  "sort_order": 5},
-    {"name": "Tacote",               "price": 70,  "sort_order": 6},
-    {"name": "Orden Grande",         "price": 160, "sort_order": 7},
-    {"name": "Orden Chica",          "price": 120, "sort_order": 8},
-    {"name": "Agua Grande",          "price": 40,  "sort_order": 9},
-    {"name": "Agua Chica",           "price": 30,  "sort_order": 10},
-    {"name": "Refresco",             "price": 30,  "sort_order": 11},
+    {"name": "Tacos",                "price": 30,  "sort_order": 1,  "category": "comida"},
+    {"name": "Taco con Queso",       "price": 40,  "sort_order": 2,  "category": "comida"},
+    {"name": "Quesadilla Sencilla",  "price": 60,  "sort_order": 3,  "category": "comida"},
+    {"name": "Quesadilla con Carne", "price": 90,  "sort_order": 4,  "category": "comida"},
+    {"name": "Volcanes",             "price": 40,  "sort_order": 5,  "category": "comida"},
+    {"name": "Tacote",               "price": 70,  "sort_order": 6,  "category": "comida"},
+    {"name": "Orden Grande",         "price": 160, "sort_order": 7,  "category": "comida"},
+    {"name": "Orden Chica",          "price": 120, "sort_order": 8,  "category": "comida"},
+    {"name": "Agua Grande",          "price": 40,  "sort_order": 9,  "category": "bebida"},
+    {"name": "Agua Chica",           "price": 30,  "sort_order": 10, "category": "bebida"},
+    {"name": "Refresco",             "price": 30,  "sort_order": 11, "category": "bebida"},
+]
+
+DEFAULT_USERS = [
+    {"username": "admin",        "password": "taco123",    "role": "admin",   "sucursal": None},
+    {"username": "valle_dorado", "password": "valle123",   "role": "cashier", "sucursal": "Valle Dorado"},
+    {"username": "mezcalitos",   "password": "mezca123",   "role": "cashier", "sucursal": "Mezcalitos"},
+    {"username": "san_vicente",  "password": "vicente123", "role": "cashier", "sucursal": "San Vicente"},
+    {"username": "pi",           "password": "pi123",      "role": "cashier", "sucursal": "3.14"},
+    {"username": "san_jose",     "password": "jose123",    "role": "cashier", "sucursal": "San Jose"},
 ]
 
 
@@ -129,6 +175,23 @@ async def seed_products_if_empty():
         docs = [Product(**p).model_dump() for p in DEFAULT_PRODUCTS]
         await db.products.insert_many(docs)
         logger.info("Seeded %d default products", len(docs))
+    # Migration: ensure all products have a category
+    await db.products.update_many(
+        {"category": {"$exists": False}},
+        [{"$set": {"category": {
+            "$cond": [
+                {"$in": ["$name", ["Agua Grande", "Agua Chica", "Refresco"]]},
+                "bebida", "comida"
+            ]}}}],
+    )
+
+
+async def seed_users_if_empty():
+    count = await db.users.count_documents({})
+    if count == 0:
+        docs = [User(**u).model_dump() for u in DEFAULT_USERS]
+        await db.users.insert_many(docs)
+        logger.info("Seeded %d default users", len(docs))
 
 
 # ----------------------------------------------------------------------------
@@ -162,7 +225,7 @@ async def update_product(product_id: str, body: ProductUpdate):
     )
     if not res:
         raise HTTPException(status_code=404, detail="Product not found")
-    return res
+    return Product(**res)
 
 
 @api_router.delete("/products/{product_id}")
@@ -180,6 +243,8 @@ async def delete_product(product_id: str):
 async def create_sale(body: SaleCreate):
     if not body.items:
         raise HTTPException(status_code=400, detail="Empty cart")
+    if body.sucursal not in SUCURSALES:
+        raise HTTPException(status_code=400, detail="Sucursal inválida")
     subtotal = sum(i.price * i.quantity for i in body.items)
     tip = body.tip if body.payment_method in ("tarjeta", "transferencia") else 0.0
     total = subtotal + tip
@@ -189,23 +254,37 @@ async def create_sale(body: SaleCreate):
         tip=round(tip, 2),
         total=round(total, 2),
         payment_method=body.payment_method,
+        sucursal=body.sucursal,
+        cashier=body.cashier,
         created_at=datetime.now(timezone.utc).isoformat(),
     )
     doc = sale.model_dump()
-    # items stored as list of dicts
     doc["items"] = [i.model_dump() for i in sale.items]
     await db.sales.insert_one(doc)
     return sale
 
 
 @api_router.get("/sales", response_model=List[Sale])
-async def list_sales(scope: Literal['today', 'all'] = 'today'):
-    q = {}
+async def list_sales(
+    scope: Literal['today', 'all', 'date'] = 'today',
+    date: Optional[str] = None,
+    sucursal: Optional[str] = None,
+):
+    q: dict = {}
     if scope == 'today':
         start_iso, end_iso = today_mx_range_utc()
-        q = {"created_at": {"$gte": start_iso, "$lt": end_iso}}
+        q["created_at"] = {"$gte": start_iso, "$lt": end_iso}
+    elif scope == 'date' and date:
+        start_iso, end_iso = date_range_utc(date)
+        q["created_at"] = {"$gte": start_iso, "$lt": end_iso}
+    if sucursal and sucursal != "all":
+        q["sucursal"] = sucursal
     cursor = db.sales.find(q, {"_id": 0}).sort("created_at", -1)
-    docs = await cursor.to_list(2000)
+    docs = await cursor.to_list(5000)
+    # backfill missing fields for legacy docs
+    for d in docs:
+        d.setdefault("sucursal", "—")
+        d.setdefault("cashier", None)
     return docs
 
 
@@ -213,23 +292,27 @@ async def list_sales(scope: Literal['today', 'all'] = 'today'):
 # Routes – Dashboard
 # ----------------------------------------------------------------------------
 @api_router.get("/dashboard")
-async def dashboard():
-    """Devuelve stats del día (Mexico City TZ)."""
-    start_iso, end_iso = today_mx_range_utc()
-    q = {"created_at": {"$gte": start_iso, "$lt": end_iso}}
-    sales = await db.sales.find(q, {"_id": 0}).to_list(5000)
+async def dashboard(date: Optional[str] = None, sucursal: Optional[str] = None):
+    """Stats del día (o fecha indicada) en MX TZ. Permite filtrar por sucursal."""
+    start_iso, end_iso = date_range_utc(date)
+    q: dict = {"created_at": {"$gte": start_iso, "$lt": end_iso}}
+    if sucursal and sucursal != "all":
+        q["sucursal"] = sucursal
+    sales = await db.sales.find(q, {"_id": 0}).to_list(10000)
 
     totals = {
         "efectivo":      {"count": 0, "amount": 0.0, "tip": 0.0},
         "transferencia": {"count": 0, "amount": 0.0, "tip": 0.0},
         "tarjeta":       {"count": 0, "amount": 0.0, "tip": 0.0},
     }
-    products_count = {}     # name -> quantity
-    products_amount = {}    # name -> revenue (precio * qty)
-    hourly = {h: 0.0 for h in range(24)}  # ventas totales por hora (incluye propina)
+    products_count = {}
+    products_amount = {}
+    hourly = {h: 0.0 for h in range(24)}
     grand_total = 0.0
     grand_subtotal = 0.0
     grand_tip = 0.0
+    tip_breakdown = {"tarjeta": 0.0, "transferencia": 0.0}
+    by_sucursal: dict = {s: {"count": 0, "total": 0.0} for s in SUCURSALES}
 
     for s in sales:
         pm = s.get("payment_method", "efectivo")
@@ -238,11 +321,18 @@ async def dashboard():
         tot = float(s.get("total", sub + tip))
         if pm in totals:
             totals[pm]["count"] += 1
-            totals[pm]["amount"] += sub   # monto sin propina por método
+            totals[pm]["amount"] += sub
             totals[pm]["tip"] += tip
+        if pm in tip_breakdown:
+            tip_breakdown[pm] += tip
         grand_subtotal += sub
         grand_tip += tip
         grand_total += tot
+
+        suc = s.get("sucursal", "—")
+        if suc in by_sucursal:
+            by_sucursal[suc]["count"] += 1
+            by_sucursal[suc]["total"] += tot
 
         for it in s.get("items", []):
             n = it.get("name", "?")
@@ -251,7 +341,6 @@ async def dashboard():
             products_count[n] = products_count.get(n, 0) + qty
             products_amount[n] = products_amount.get(n, 0.0) + price * qty
 
-        # hora local MX
         try:
             dt_utc = datetime.fromisoformat(s["created_at"])
             dt_mx = dt_utc.astimezone(MX_TZ)
@@ -264,13 +353,14 @@ async def dashboard():
          for k, v in products_count.items()],
         key=lambda x: x["quantity"], reverse=True
     )
-
     sales_by_hour = [
         {"hour": f"{h:02d}:00", "total": round(hourly[h], 2)}
         for h in range(24)
     ]
 
     return {
+        "date": (date or datetime.now(MX_TZ).strftime("%Y-%m-%d")),
+        "sucursal": sucursal or "all",
         "grand_total": round(grand_total, 2),
         "grand_subtotal": round(grand_subtotal, 2),
         "grand_tip": round(grand_tip, 2),
@@ -278,20 +368,65 @@ async def dashboard():
         "by_payment": {k: {"count": v["count"],
                            "amount": round(v["amount"], 2),
                            "tip": round(v["tip"], 2)} for k, v in totals.items()},
+        "tip_breakdown": {k: round(v, 2) for k, v in tip_breakdown.items()},
+        "by_sucursal": {k: {"count": v["count"], "total": round(v["total"], 2)}
+                        for k, v in by_sucursal.items()},
         "top_products": top_products,
         "sales_by_hour": sales_by_hour,
     }
 
 
 # ----------------------------------------------------------------------------
-# Routes – Admin auth (simple)
+# Routes – Auth (login) y administración de usuarios
 # ----------------------------------------------------------------------------
+@api_router.post("/auth/login")
+async def login(body: LoginRequest):
+    user = await db.users.find_one(
+        {"username": body.username, "password": body.password, "active": True},
+        {"_id": 0, "password": 0},
+    )
+    if not user:
+        # fallback to env admin for safety (en caso de DB vacía)
+        if body.username == ADMIN_USERNAME and body.password == ADMIN_PASSWORD:
+            return {"ok": True, "token": f"session-{ADMIN_USERNAME}",
+                    "user": {"username": ADMIN_USERNAME, "role": "admin", "sucursal": None}}
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Credenciales inválidas")
+    return {"ok": True, "token": f"session-{user['username']}", "user": user}
+
+
+# Backwards-compatible admin login (acepta solo admins)
 @api_router.post("/admin/login")
 async def admin_login(body: LoginRequest):
-    if body.username == ADMIN_USERNAME and body.password == ADMIN_PASSWORD:
-        return {"ok": True, "token": "admin-session"}
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Credenciales inválidas")
+    res = await login(body)
+    if res["user"]["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Solo administradores")
+    return res
+
+
+@api_router.get("/sucursales")
+async def list_sucursales():
+    return {"sucursales": SUCURSALES}
+
+
+@api_router.get("/users")
+async def list_users():
+    users = await db.users.find({}, {"_id": 0, "password": 0}).sort("role", 1).to_list(100)
+    return users
+
+
+@api_router.put("/users/{user_id}")
+async def update_user(user_id: str, body: UserUpdate):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not fields:
+        raise HTTPException(status_code=400, detail="Sin cambios")
+    res = await db.users.find_one_and_update(
+        {"id": user_id}, {"$set": fields},
+        projection={"_id": 0, "password": 0}, return_document=True,
+    )
+    if not res:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    return dict(res)
 
 
 @api_router.get("/")
@@ -315,6 +450,7 @@ app.add_middleware(
 @app.on_event("startup")
 async def on_startup():
     await seed_products_if_empty()
+    await seed_users_if_empty()
 
 
 @app.on_event("shutdown")
