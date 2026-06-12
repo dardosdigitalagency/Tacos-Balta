@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 3 testing of Tacos POS (propinas %, order_type, efectivo cambio, multicaja, dashboard ampliado, badge removal). Backend pytest suite rewritten for new schema: 16/16 PASS (Users CRUD with caja_name + login of created user; duplicate 409; cashier without sucursal 400; PUT username/password/sucursal/caja_name with relogin; DELETE user; cannot delete unique admin; sales order_type required 422; mesa without mesa_number 400; llevar/domicilio OK without mesa; efectivo cash_received -> change_given 40, insufficient cash 400; dashboard new fields avg_ticket/avg_items/peak_hour/total_items/by_caja/by_order_type/tip_breakdown; dashboard caja filter). Frontend POS (390x844): emergent-badge ABSENT, overscroll-behavior-y='contain' on html+body, login of valle_caja2/caja2pass works, header shows 'VALLE_CAJA2 · CAJA 2 / Valle Dorado', btn-ordertype-{mesa|llevar|domicilio} present, input-mesa toggles correctly (visible only for mesa), empty mesa charge fires toast 'Ingresa el número de mesa' and blocks submit, 2 Tacos + tarjeta + tip-percent-15 -> input-tip=9 and total $69, manual tip 20 then tip-percent-10 -> input-tip=6 (% overrides manual), efectivo cash_received=100 -> change-display 'CAMBIO $40', btn-charge submits, toast 'Venta cobrada $60 · Cambio $40' shown, cart cleared (cart-total=$0). Admin (1280x900): all KPIs present (avg-ticket $59, avg-items 1.86, peak-hour 07:00 $414, items-total 13), ordertype-mesa/llevar/domicilio sections show totals, sucursal Valle Dorado reveals caja-filter with caja-all/caja-Caja 1/caja-Caja 2 and by-caja-section, caja=Caja 2 filter recalculates KPIs (avg-ticket=$78). Users tab CRUD: new-user-username/password/role/sucursal/caja + btn-create-user create a cashier; edit-caja + btn-save-user persists change; btn-delete-user confirms via window.confirm and removes the row (toast 'Usuario eliminado').",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "AdminDashboard Users tab", "issues": ["Admin row shows an 'Eliminar' button even though backend correctly returns 400 for the unique admin. Consider disabling the button when only one admin exists to give the user a clearer signal (defense in depth, backend already blocks)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py /api/users POST/PUT/DELETE have NO auth gating — anyone reaching these URLs can create/modify/delete users (and therefore obtain login credentials). Add an admin token/role check before exposing publicly. Same applies to /api/products and /api/sales endpoints.",
+    "server.py still uses deprecated @app.on_event('startup'/'shutdown'); migrate to FastAPI lifespan.",
+    "Passwords are stored in PLAINTEXT in MongoDB and returned through fallback admin login. For an internal MVP this matches the request but bcrypt should be on the roadmap.",
+    "POS.jsx + AdminDashboard.jsx are getting large (POS ~ several screens, AdminDashboard.jsx 992 lines). Consider splitting AdminDashboard.jsx into smaller components (UsersTab, SalesTab, DashboardTab) for maintainability (>700 line guideline).",
+    "Backfill in /api/sales for legacy docs (setdefault order_type='mesa') means a legacy 'llevar' sale missing the field would be displayed as 'mesa' — minor since user said old ventas were deleted, but worth a note.",
+    "Frontend window.confirm() for delete is functional but Sonner/AlertDialog would feel more consistent with the rest of the UI.",
+    "/api/users PUT does not enforce role on update (cashier role cannot be removed via UserUpdate). That's intentional but should be documented."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py"
+  ],
+  "success_rate": {"backend": "100% (16/16)", "frontend": "100% of tested flows"},
+  "test_credentials": "admin/taco123, valle_dorado/valle123, mezcalitos/mezca123, san_vicente/vicente123, pi/pi123, san_jose/jose123, valle_caja2/caja2pass (Valle Dorado · Caja 2). Source: /app/memory/test_credentials.md + DEFAULT_USERS + iter-3 seed.",
+  "seed_data_creation": "Backend tests created and DELETED their own TEST_caja_xxx user (cleaned up). Tests also created today sales: 1 efectivo Valle Dorado/Caja 1 mesa ($60), 1 efectivo llevar ($30), 1 efectivo domicilio ($30), 1 tarjeta Valle Dorado/Caja 2 llevar ($105 with $15 tip). Frontend POS flow created 1 efectivo mesa sale Valle Dorado/Caja 2 ($60, cash=$100, change=$40). Frontend Users CRUD created and then DELETED test_ui_xxx user. All test users cleaned up.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Pytest at /app/backend/tests/backend_test.py is now iteration-3 schema (sale requires order_type; users have caja_name; POST/DELETE /api/users available). Run: REACT_APP_BACKEND_URL=https://mobile-checkout-pos.preview.emergentagent.com pytest backend/tests/. Frontend testids confirmed: btn-payment-{efectivo|transferencia|tarjeta} (NOT 'pay-*'); btn-ordertype-{mesa|llevar|domicilio}; tip-percent-{5|10|15|20} (only when payment_method in tarjeta/transferencia); input-mesa visible only when order_type=mesa; input-cash-received visible only when payment_method=efectivo with change-display computing on the fly. Admin tabs are buttons (Dashboard/Ventas/Precios/Usuarios) — use get_by_role('button', name='Usuarios') instead of role=tab. caja-filter only renders after a sucursal is selected (not 'todas'). Users delete uses window.confirm(); register page.once('dialog', d.accept()).",
+  "rca_of_the_issue": "N/A - no bugs found in this iteration. All 25 feature checks from the review_request pass."
+}

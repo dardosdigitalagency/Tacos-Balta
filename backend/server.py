@@ -84,6 +84,10 @@ class SaleCreate(BaseModel):
     tip: float = 0.0
     sucursal: str
     cashier: Optional[str] = None
+    caja: Optional[str] = None
+    order_type: Literal['mesa', 'llevar', 'domicilio']
+    mesa_number: Optional[str] = None
+    cash_received: Optional[float] = None
 
 
 class Sale(BaseModel):
@@ -96,6 +100,11 @@ class Sale(BaseModel):
     payment_method: str
     sucursal: str
     cashier: Optional[str] = None
+    caja: Optional[str] = None
+    order_type: str = "mesa"
+    mesa_number: Optional[str] = None
+    cash_received: Optional[float] = None
+    change_given: Optional[float] = None
     created_at: str
 
 
@@ -106,12 +115,23 @@ class User(BaseModel):
     password: str
     role: Literal['admin', 'cashier'] = 'cashier'
     sucursal: Optional[str] = None
+    caja_name: str = "Caja 1"
     active: bool = True
 
 
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    role: Literal['admin', 'cashier'] = 'cashier'
+    sucursal: Optional[str] = None
+    caja_name: str = "Caja 1"
+
+
 class UserUpdate(BaseModel):
+    username: Optional[str] = None
     password: Optional[str] = None
     sucursal: Optional[str] = None
+    caja_name: Optional[str] = None
     active: Optional[bool] = None
 
 
@@ -160,12 +180,12 @@ DEFAULT_PRODUCTS = [
 ]
 
 DEFAULT_USERS = [
-    {"username": "admin",        "password": "taco123",    "role": "admin",   "sucursal": None},
-    {"username": "valle_dorado", "password": "valle123",   "role": "cashier", "sucursal": "Valle Dorado"},
-    {"username": "mezcalitos",   "password": "mezca123",   "role": "cashier", "sucursal": "Mezcalitos"},
-    {"username": "san_vicente",  "password": "vicente123", "role": "cashier", "sucursal": "San Vicente"},
-    {"username": "pi",           "password": "pi123",      "role": "cashier", "sucursal": "3.14"},
-    {"username": "san_jose",     "password": "jose123",    "role": "cashier", "sucursal": "San Jose"},
+    {"username": "admin",        "password": "taco123",    "role": "admin",   "sucursal": None,           "caja_name": "Admin"},
+    {"username": "valle_dorado", "password": "valle123",   "role": "cashier", "sucursal": "Valle Dorado", "caja_name": "Caja 1"},
+    {"username": "mezcalitos",   "password": "mezca123",   "role": "cashier", "sucursal": "Mezcalitos",   "caja_name": "Caja 1"},
+    {"username": "san_vicente",  "password": "vicente123", "role": "cashier", "sucursal": "San Vicente",  "caja_name": "Caja 1"},
+    {"username": "pi",           "password": "pi123",      "role": "cashier", "sucursal": "3.14",         "caja_name": "Caja 1"},
+    {"username": "san_jose",     "password": "jose123",    "role": "cashier", "sucursal": "San Jose",     "caja_name": "Caja 1"},
 ]
 
 
@@ -192,6 +212,11 @@ async def seed_users_if_empty():
         docs = [User(**u).model_dump() for u in DEFAULT_USERS]
         await db.users.insert_many(docs)
         logger.info("Seeded %d default users", len(docs))
+    # Migration: ensure all users have caja_name
+    await db.users.update_many(
+        {"caja_name": {"$exists": False}},
+        {"$set": {"caja_name": "Caja 1"}},
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -245,9 +270,22 @@ async def create_sale(body: SaleCreate):
         raise HTTPException(status_code=400, detail="Empty cart")
     if body.sucursal not in SUCURSALES:
         raise HTTPException(status_code=400, detail="Sucursal inválida")
+    if body.order_type == "mesa" and not (body.mesa_number and str(body.mesa_number).strip()):
+        raise HTTPException(status_code=400, detail="Número de mesa requerido")
+
     subtotal = sum(i.price * i.quantity for i in body.items)
     tip = body.tip if body.payment_method in ("tarjeta", "transferencia") else 0.0
     total = subtotal + tip
+
+    # Cálculo de cambio para efectivo
+    change_given = None
+    cash_received = None
+    if body.payment_method == "efectivo" and body.cash_received is not None:
+        cash_received = float(body.cash_received)
+        if cash_received < total:
+            raise HTTPException(status_code=400, detail="Dinero recibido menor al total")
+        change_given = round(cash_received - total, 2)
+
     sale = Sale(
         items=body.items,
         subtotal=round(subtotal, 2),
@@ -256,6 +294,11 @@ async def create_sale(body: SaleCreate):
         payment_method=body.payment_method,
         sucursal=body.sucursal,
         cashier=body.cashier,
+        caja=body.caja,
+        order_type=body.order_type,
+        mesa_number=(str(body.mesa_number).strip() if body.mesa_number else None),
+        cash_received=cash_received,
+        change_given=change_given,
         created_at=datetime.now(timezone.utc).isoformat(),
     )
     doc = sale.model_dump()
@@ -269,6 +312,7 @@ async def list_sales(
     scope: Literal['today', 'all', 'date'] = 'today',
     date: Optional[str] = None,
     sucursal: Optional[str] = None,
+    caja: Optional[str] = None,
 ):
     q: dict = {}
     if scope == 'today':
@@ -279,12 +323,19 @@ async def list_sales(
         q["created_at"] = {"$gte": start_iso, "$lt": end_iso}
     if sucursal and sucursal != "all":
         q["sucursal"] = sucursal
+    if caja and caja != "all":
+        q["caja"] = caja
     cursor = db.sales.find(q, {"_id": 0}).sort("created_at", -1)
     docs = await cursor.to_list(5000)
     # backfill missing fields for legacy docs
     for d in docs:
         d.setdefault("sucursal", "—")
         d.setdefault("cashier", None)
+        d.setdefault("caja", None)
+        d.setdefault("order_type", "mesa")
+        d.setdefault("mesa_number", None)
+        d.setdefault("cash_received", None)
+        d.setdefault("change_given", None)
     return docs
 
 
@@ -292,12 +343,18 @@ async def list_sales(
 # Routes – Dashboard
 # ----------------------------------------------------------------------------
 @api_router.get("/dashboard")
-async def dashboard(date: Optional[str] = None, sucursal: Optional[str] = None):
-    """Stats del día (o fecha indicada) en MX TZ. Permite filtrar por sucursal."""
+async def dashboard(
+    date: Optional[str] = None,
+    sucursal: Optional[str] = None,
+    caja: Optional[str] = None,
+):
+    """Stats del día (o fecha indicada) en MX TZ. Filtros: sucursal, caja."""
     start_iso, end_iso = date_range_utc(date)
     q: dict = {"created_at": {"$gte": start_iso, "$lt": end_iso}}
     if sucursal and sucursal != "all":
         q["sucursal"] = sucursal
+    if caja and caja != "all":
+        q["caja"] = caja
     sales = await db.sales.find(q, {"_id": 0}).to_list(10000)
 
     totals = {
@@ -305,26 +362,40 @@ async def dashboard(date: Optional[str] = None, sucursal: Optional[str] = None):
         "transferencia": {"count": 0, "amount": 0.0, "tip": 0.0},
         "tarjeta":       {"count": 0, "amount": 0.0, "tip": 0.0},
     }
-    products_count = {}
-    products_amount = {}
+    by_order_type = {
+        "mesa":      {"count": 0, "total": 0.0},
+        "llevar":    {"count": 0, "total": 0.0},
+        "domicilio": {"count": 0, "total": 0.0},
+    }
+    products_count: dict = {}
+    products_amount: dict = {}
     hourly = {h: 0.0 for h in range(24)}
     grand_total = 0.0
     grand_subtotal = 0.0
     grand_tip = 0.0
+    total_items = 0
     tip_breakdown = {"tarjeta": 0.0, "transferencia": 0.0}
     by_sucursal: dict = {s: {"count": 0, "total": 0.0} for s in SUCURSALES}
+    by_caja: dict = {}  # {caja_name: {count, total}}
 
     for s in sales:
         pm = s.get("payment_method", "efectivo")
         sub = float(s.get("subtotal", 0))
         tip = float(s.get("tip", 0))
         tot = float(s.get("total", sub + tip))
+        ot = s.get("order_type", "mesa")
+        ck = s.get("caja") or "—"
+
         if pm in totals:
             totals[pm]["count"] += 1
             totals[pm]["amount"] += sub
             totals[pm]["tip"] += tip
         if pm in tip_breakdown:
             tip_breakdown[pm] += tip
+        if ot in by_order_type:
+            by_order_type[ot]["count"] += 1
+            by_order_type[ot]["total"] += tot
+
         grand_subtotal += sub
         grand_tip += tip
         grand_total += tot
@@ -334,12 +405,18 @@ async def dashboard(date: Optional[str] = None, sucursal: Optional[str] = None):
             by_sucursal[suc]["count"] += 1
             by_sucursal[suc]["total"] += tot
 
+        if ck not in by_caja:
+            by_caja[ck] = {"count": 0, "total": 0.0}
+        by_caja[ck]["count"] += 1
+        by_caja[ck]["total"] += tot
+
         for it in s.get("items", []):
             n = it.get("name", "?")
             qty = int(it.get("quantity", 0))
             price = float(it.get("price", 0))
             products_count[n] = products_count.get(n, 0) + qty
             products_amount[n] = products_amount.get(n, 0.0) + price * qty
+            total_items += qty
 
         try:
             dt_utc = datetime.fromisoformat(s["created_at"])
@@ -357,20 +434,37 @@ async def dashboard(date: Optional[str] = None, sucursal: Optional[str] = None):
         {"hour": f"{h:02d}:00", "total": round(hourly[h], 2)}
         for h in range(24)
     ]
+    peak_hour = None
+    if any(v > 0 for v in hourly.values()):
+        peak = max(hourly.items(), key=lambda x: x[1])
+        peak_hour = {"hour": f"{peak[0]:02d}:00", "total": round(peak[1], 2)}
+
+    sales_count = len(sales)
+    avg_ticket = round(grand_total / sales_count, 2) if sales_count else 0
+    avg_items = round(total_items / sales_count, 2) if sales_count else 0
 
     return {
         "date": (date or datetime.now(MX_TZ).strftime("%Y-%m-%d")),
         "sucursal": sucursal or "all",
+        "caja": caja or "all",
         "grand_total": round(grand_total, 2),
         "grand_subtotal": round(grand_subtotal, 2),
         "grand_tip": round(grand_tip, 2),
-        "sales_count": len(sales),
+        "sales_count": sales_count,
+        "avg_ticket": avg_ticket,
+        "avg_items": avg_items,
+        "peak_hour": peak_hour,
+        "total_items": total_items,
         "by_payment": {k: {"count": v["count"],
                            "amount": round(v["amount"], 2),
                            "tip": round(v["tip"], 2)} for k, v in totals.items()},
         "tip_breakdown": {k: round(v, 2) for k, v in tip_breakdown.items()},
         "by_sucursal": {k: {"count": v["count"], "total": round(v["total"], 2)}
                         for k, v in by_sucursal.items()},
+        "by_caja": {k: {"count": v["count"], "total": round(v["total"], 2)}
+                    for k, v in by_caja.items()},
+        "by_order_type": {k: {"count": v["count"], "total": round(v["total"], 2)}
+                          for k, v in by_order_type.items()},
         "top_products": top_products,
         "sales_by_hour": sales_by_hour,
     }
@@ -411,8 +505,32 @@ async def list_sucursales():
 
 @api_router.get("/users")
 async def list_users():
-    users = await db.users.find({}, {"_id": 0, "password": 0}).sort("role", 1).to_list(100)
+    users = await db.users.find({}, {"_id": 0, "password": 0}).sort("role", 1).to_list(200)
     return users
+
+
+@api_router.post("/users")
+async def create_user(body: UserCreate):
+    if not body.username.strip():
+        raise HTTPException(status_code=400, detail="Usuario requerido")
+    if not body.password.strip():
+        raise HTTPException(status_code=400, detail="Contraseña requerida")
+    if body.role == "cashier" and (not body.sucursal or body.sucursal not in SUCURSALES):
+        raise HTTPException(status_code=400, detail="Sucursal inválida")
+    existing = await db.users.find_one({"username": body.username.strip()})
+    if existing:
+        raise HTTPException(status_code=409, detail="El usuario ya existe")
+    user = User(
+        username=body.username.strip(),
+        password=body.password,
+        role=body.role,
+        sucursal=body.sucursal,
+        caja_name=body.caja_name.strip() or "Caja 1",
+    )
+    await db.users.insert_one(user.model_dump())
+    safe = user.model_dump()
+    safe.pop("password", None)
+    return safe
 
 
 @api_router.put("/users/{user_id}")
@@ -420,6 +538,14 @@ async def update_user(user_id: str, body: UserUpdate):
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
     if not fields:
         raise HTTPException(status_code=400, detail="Sin cambios")
+    # Validar que no se duplique el username
+    if "username" in fields:
+        fields["username"] = fields["username"].strip()
+        existing = await db.users.find_one(
+            {"username": fields["username"], "id": {"$ne": user_id}}
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail="El usuario ya existe")
     res = await db.users.find_one_and_update(
         {"id": user_id}, {"$set": fields},
         projection={"_id": 0, "password": 0}, return_document=True,
@@ -427,6 +553,20 @@ async def update_user(user_id: str, body: UserUpdate):
     if not res:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     return dict(res)
+
+
+@api_router.delete("/users/{user_id}")
+async def delete_user(user_id: str):
+    # Evitar borrar al único admin
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    if target.get("role") == "admin":
+        admin_count = await db.users.count_documents({"role": "admin"})
+        if admin_count <= 1:
+            raise HTTPException(status_code=400, detail="No se puede eliminar el único administrador")
+    await db.users.delete_one({"id": user_id})
+    return {"ok": True}
 
 
 @api_router.get("/")

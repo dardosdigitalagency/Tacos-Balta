@@ -1,9 +1,11 @@
 /**
- * POS – Punto de Venta compacto y mobile-first.
- * - Sesión por cajero (sucursal viene del login).
- * - Panel inferior compacto para maximizar productos visibles.
- * - Nombres completos (no se truncan).
- * - Bebidas con acento azul para distinguirlas de comida.
+ * POS – Punto de Venta compacto.
+ * Nuevas features:
+ *  - Orden obligatoria: Mesa / Llevar / Domicilio. Si es Mesa, # de mesa requerido.
+ *  - Propina: monto fijo o porcentajes (5/10/15/20%) cuando paga con tarjeta/transferencia.
+ *  - Efectivo: input "dinero recibido" y cálculo automático de cambio.
+ *  - Pull-to-refresh bloqueado vía CSS.
+ *  - Caja se toma del usuario logueado.
  */
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -12,17 +14,28 @@ import { api, formatMXN, PAYMENT_LABELS } from "@/lib/api";
 import { getSession, clearSession } from "@/lib/auth";
 
 const PAYMENTS = ["efectivo", "transferencia", "tarjeta"];
+const ORDER_TYPES = [
+  { value: "mesa", label: "Mesa" },
+  { value: "llevar", label: "Llevar" },
+  { value: "domicilio", label: "Domicilio" },
+];
+const TIP_PERCENTS = [5, 10, 15, 20];
 
 export default function POS() {
   const navigate = useNavigate();
   const session = getSession();
   const sucursal = session?.user?.sucursal || (session?.user?.role === "admin" ? "Valle Dorado" : null);
   const cashier = session?.user?.username;
+  const caja = session?.user?.caja_name || "Caja 1";
 
   const [products, setProducts] = useState([]);
   const [cart, setCart] = useState({});
   const [payment, setPayment] = useState("efectivo");
-  const [tip, setTip] = useState(0);
+  const [tipPercent, setTipPercent] = useState(null);   // si se elige %, calculamos de subtotal
+  const [tipManual, setTipManual] = useState("");        // monto manual
+  const [orderType, setOrderType] = useState("mesa");
+  const [mesaNumber, setMesaNumber] = useState("");
+  const [cashReceived, setCashReceived] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
 
@@ -48,9 +61,17 @@ export default function POS() {
 
   const subtotal = lineItems.reduce((s, i) => s + i.subtotal, 0);
   const showTip = payment === "tarjeta" || payment === "transferencia";
-  const effectiveTip = showTip ? Number(tip || 0) : 0;
+  const effectiveTip = useMemo(() => {
+    if (!showTip) return 0;
+    if (tipPercent !== null) return Math.round(subtotal * (tipPercent / 100));
+    return Number(tipManual || 0);
+  }, [showTip, tipPercent, tipManual, subtotal]);
   const total = subtotal + effectiveTip;
   const itemsCount = lineItems.reduce((s, i) => s + i.quantity, 0);
+
+  const isCash = payment === "efectivo";
+  const cashNum = Number(cashReceived || 0);
+  const change = isCash && cashNum >= total && total > 0 ? cashNum - total : 0;
 
   const setQty = (pid, qty) =>
     setCart((c) => ({ ...c, [pid]: Math.max(0, Math.floor(Number(qty) || 0)) }));
@@ -62,9 +83,27 @@ export default function POS() {
     navigate("/", { replace: true });
   };
 
+  const reset = () => {
+    setCart({});
+    setTipPercent(null);
+    setTipManual("");
+    setPayment("efectivo");
+    setOrderType("mesa");
+    setMesaNumber("");
+    setCashReceived("");
+    setShowDetail(false);
+  };
+
   const handleCharge = async () => {
     if (subtotal <= 0) return toast.error("Agrega productos al carrito");
     if (!sucursal) return toast.error("Sin sucursal asignada");
+    if (!orderType) return toast.error("Selecciona tipo de orden");
+    if (orderType === "mesa" && !mesaNumber.trim()) {
+      return toast.error("Ingresa el número de mesa");
+    }
+    if (isCash && cashReceived !== "" && cashNum < total) {
+      return toast.error("Dinero recibido es menor al total");
+    }
     setSubmitting(true);
     try {
       await api.post("/sales", {
@@ -75,14 +114,17 @@ export default function POS() {
         tip: effectiveTip,
         sucursal,
         cashier,
+        caja,
+        order_type: orderType,
+        mesa_number: orderType === "mesa" ? mesaNumber.trim() : null,
+        cash_received: isCash && cashReceived !== "" ? cashNum : null,
       });
-      toast.success(`Venta cobrada · ${formatMXN(total)}`);
-      setCart({});
-      setTip(0);
-      setPayment("efectivo");
-      setShowDetail(false);
-    } catch {
-      toast.error("Error al guardar la venta");
+      const changeMsg = change > 0 ? ` · Cambio ${formatMXN(change)}` : "";
+      toast.success(`Venta cobrada ${formatMXN(total)}${changeMsg}`);
+      reset();
+    } catch (e) {
+      const msg = e?.response?.data?.detail || "Error al guardar la venta";
+      toast.error(typeof msg === "string" ? msg : "Error al guardar la venta");
     } finally {
       setSubmitting(false);
     }
@@ -97,7 +139,7 @@ export default function POS() {
       >
         <div className="min-w-0 flex-1">
           <p className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 leading-none">
-            {cashier}
+            {cashier} · {caja}
           </p>
           <h1
             className="font-display text-xl font-black text-[#006400] leading-tight truncate"
@@ -136,17 +178,35 @@ export default function POS() {
         <div className="h-2" />
       </main>
 
-      {/* Cart panel compacto */}
       <CartPanel
         items={lineItems}
         subtotal={subtotal}
         tip={effectiveTip}
         total={total}
         payment={payment}
-        setPayment={setPayment}
+        setPayment={(p) => {
+          setPayment(p);
+          // limpiar campos no aplicables
+          if (p === "efectivo") {
+            setTipPercent(null);
+            setTipManual("");
+          } else {
+            setCashReceived("");
+          }
+        }}
         showTip={showTip}
-        tipInput={tip}
-        setTipInput={setTip}
+        tipPercent={tipPercent}
+        setTipPercent={setTipPercent}
+        tipManual={tipManual}
+        setTipManual={setTipManual}
+        isCash={isCash}
+        cashReceived={cashReceived}
+        setCashReceived={setCashReceived}
+        change={change}
+        orderType={orderType}
+        setOrderType={setOrderType}
+        mesaNumber={mesaNumber}
+        setMesaNumber={setMesaNumber}
         onCharge={handleCharge}
         submitting={submitting}
         itemsCount={itemsCount}
@@ -158,13 +218,12 @@ export default function POS() {
 }
 
 // ----------------------------------------------------------------------------
-// Product Row – nombre completo, color por categoría
+// Product Row
 // ----------------------------------------------------------------------------
 function ProductRow({ product, qty, onInc, onDec, onChange }) {
   const selected = qty > 0;
   const isDrink = product.category === "bebida";
-  const accent = isDrink ? "#0369A1" : "#006400";          // blue-700 / verde
-  const accentHover = isDrink ? "#0284C7" : "#228B22";
+  const accent = isDrink ? "#0369A1" : "#006400";
   const tagBg = isDrink ? "bg-sky-50 text-sky-800" : "bg-emerald-50 text-emerald-900";
   const tagText = isDrink ? "BEBIDA" : "COMIDA";
 
@@ -218,8 +277,6 @@ function ProductRow({ product, qty, onInc, onDec, onChange }) {
           onClick={onInc}
           aria-label={`Sumar ${product.name}`}
           style={{ backgroundColor: accent }}
-          onMouseDown={(e) => (e.currentTarget.style.backgroundColor = accentHover)}
-          onMouseUp={(e) => (e.currentTarget.style.backgroundColor = accent)}
           className="w-11 h-11 sm:w-12 sm:h-12 rounded-md text-white text-2xl font-black tap-scale"
         >
           +
@@ -230,33 +287,24 @@ function ProductRow({ product, qty, onInc, onDec, onChange }) {
 }
 
 // ----------------------------------------------------------------------------
-// Cart Panel COMPACTO
+// Cart Panel
 // ----------------------------------------------------------------------------
 function CartPanel({
-  items,
-  subtotal,
-  tip,
-  total,
-  payment,
-  setPayment,
-  showTip,
-  tipInput,
-  setTipInput,
-  onCharge,
-  submitting,
-  itemsCount,
-  showDetail,
-  setShowDetail,
+  items, subtotal, tip, total,
+  payment, setPayment,
+  showTip, tipPercent, setTipPercent, tipManual, setTipManual,
+  isCash, cashReceived, setCashReceived, change,
+  orderType, setOrderType, mesaNumber, setMesaNumber,
+  onCharge, submitting, itemsCount, showDetail, setShowDetail,
 }) {
   return (
     <section
-      className="bg-white border-t-4 border-[#006400] shadow-[0_-6px_24px_rgba(0,0,0,0.08)]"
+      className="bg-white border-t-4 border-[#006400] shadow-[0_-6px_24px_rgba(0,0,0,0.08)] max-h-[70vh] overflow-y-auto"
       data-testid="cart-panel"
     >
-      {/* Detalle expandible (overlay sobre productos) */}
       {showDetail && items.length > 0 && (
         <div
-          className="max-h-44 overflow-y-auto px-3 py-2 space-y-1 border-b border-zinc-100"
+          className="max-h-40 overflow-y-auto px-3 py-2 space-y-1 border-b border-zinc-100"
           data-testid="cart-detail"
         >
           {items.map((i) => (
@@ -275,7 +323,7 @@ function CartPanel({
         </div>
       )}
 
-      {/* Fila 1: items + total */}
+      {/* Resumen + total */}
       <button
         onClick={() => items.length > 0 && setShowDetail((v) => !v)}
         data-testid="cart-toggle"
@@ -285,9 +333,7 @@ function CartPanel({
           <p className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 leading-none">
             {itemsCount} {itemsCount === 1 ? "producto" : "productos"}
             {items.length > 0 && (
-              <span className="text-zinc-400 ml-1">
-                {showDetail ? "▼" : "▲"}
-              </span>
+              <span className="text-zinc-400 ml-1">{showDetail ? "▼" : "▲"}</span>
             )}
           </p>
           {tip > 0 && (
@@ -307,8 +353,47 @@ function CartPanel({
         </p>
       </button>
 
-      {/* Fila 2: métodos de pago */}
-      <div className="px-3 py-1.5 grid grid-cols-3 gap-1.5">
+      {/* Tipo de orden */}
+      <div className="px-3 py-1.5">
+        <div className="grid grid-cols-3 gap-1.5" data-testid="order-type-row">
+          {ORDER_TYPES.map((o) => {
+            const active = orderType === o.value;
+            return (
+              <button
+                key={o.value}
+                data-testid={`btn-ordertype-${o.value}`}
+                onClick={() => setOrderType(o.value)}
+                className={`h-10 rounded-md text-[11px] uppercase tracking-widest font-black border-2 tap-scale ${
+                  active
+                    ? "bg-zinc-900 text-white border-zinc-900"
+                    : "bg-white text-zinc-900 border-zinc-300"
+                }`}
+              >
+                {o.label}
+              </button>
+            );
+          })}
+        </div>
+        {orderType === "mesa" && (
+          <div className="flex items-center gap-2 mt-1.5" data-testid="mesa-area">
+            <label className="text-[10px] uppercase tracking-widest font-black text-zinc-500 w-14">
+              Mesa
+            </label>
+            <input
+              data-testid="input-mesa"
+              type="text"
+              inputMode="numeric"
+              value={mesaNumber}
+              onChange={(e) => setMesaNumber(e.target.value)}
+              placeholder="Ej. 5"
+              className="flex-1 h-10 px-2 text-base font-black border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Métodos de pago */}
+      <div className="px-3 pt-0.5 pb-1.5 grid grid-cols-3 gap-1.5">
         {PAYMENTS.map((p) => {
           const active = payment === p;
           return (
@@ -328,36 +413,87 @@ function CartPanel({
         })}
       </div>
 
-      {/* Fila 3 condicional: propina */}
+      {/* Propina (tarjeta/transferencia) */}
       {showTip && (
-        <div className="px-3 pb-1.5 flex items-center gap-1.5" data-testid="tip-area">
-          <label className="text-[10px] uppercase tracking-widest font-black text-zinc-500 w-14">
-            Propina
-          </label>
-          <input
-            data-testid="input-tip"
-            type="number"
-            inputMode="decimal"
-            value={tipInput}
-            onChange={(e) => setTipInput(e.target.value)}
-            placeholder="0"
-            className="flex-1 h-10 px-2 text-base font-black border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
-            min="0"
-          />
-          {[10, 20, 50].map((v) => (
-            <button
-              key={v}
-              data-testid={`tip-preset-${v}`}
-              onClick={() => setTipInput(v)}
-              className="h-10 w-11 rounded-md bg-zinc-100 text-xs font-black active:bg-zinc-200 tap-scale"
-            >
-              +{v}
-            </button>
-          ))}
+        <div className="px-3 pb-1.5 space-y-1.5" data-testid="tip-area">
+          <div className="flex items-center gap-1.5">
+            <label className="text-[10px] uppercase tracking-widest font-black text-zinc-500 w-14">
+              Propina
+            </label>
+            <input
+              data-testid="input-tip"
+              type="number"
+              inputMode="decimal"
+              value={tipPercent !== null ? Math.round(subtotal * tipPercent / 100) : tipManual}
+              onChange={(e) => {
+                setTipPercent(null);
+                setTipManual(e.target.value);
+              }}
+              placeholder="0"
+              className="flex-1 h-10 px-2 text-base font-black border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+              min="0"
+            />
+          </div>
+          <div className="grid grid-cols-4 gap-1.5">
+            {TIP_PERCENTS.map((p) => {
+              const active = tipPercent === p;
+              return (
+                <button
+                  key={p}
+                  data-testid={`tip-percent-${p}`}
+                  onClick={() => {
+                    setTipManual("");
+                    setTipPercent(active ? null : p);
+                  }}
+                  className={`h-9 rounded-md text-xs font-black border-2 tap-scale ${
+                    active
+                      ? "bg-[#006400] text-white border-[#006400]"
+                      : "bg-white text-[#006400] border-[#006400]"
+                  }`}
+                >
+                  {p}%
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
-      {/* Fila 4: botón cobrar */}
+      {/* Efectivo: recibido + cambio */}
+      {isCash && (
+        <div className="px-3 pb-1.5 space-y-1.5" data-testid="cash-area">
+          <div className="flex items-center gap-1.5">
+            <label className="text-[10px] uppercase tracking-widest font-black text-zinc-500 w-14">
+              Recibido
+            </label>
+            <input
+              data-testid="input-cash-received"
+              type="number"
+              inputMode="decimal"
+              value={cashReceived}
+              onChange={(e) => setCashReceived(e.target.value)}
+              placeholder={total > 0 ? formatMXN(total) : "0"}
+              className="flex-1 h-10 px-2 text-base font-black border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+              min="0"
+            />
+          </div>
+          {change > 0 && (
+            <div
+              className="flex items-center justify-between bg-emerald-50 border-2 border-emerald-200 rounded-md px-3 py-1.5"
+              data-testid="change-display"
+            >
+              <span className="text-[10px] uppercase tracking-widest font-black text-emerald-900">
+                Cambio
+              </span>
+              <span className="font-display text-2xl font-black text-emerald-700 leading-none">
+                {formatMXN(change)}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Cobrar */}
       <div className="px-3 pb-3 pt-1">
         <button
           data-testid="btn-charge"

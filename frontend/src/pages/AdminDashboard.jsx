@@ -1,10 +1,12 @@
 /**
- * Admin Dashboard
- * - Filtros: sucursal (todas o una de las 5) + selector de fecha (calendario).
- * - KPIs, gráficas, tabla de ventas y editor de precios.
- * - Propina mostrada por separado: tarjeta vs transferencia.
- * - Tab Usuarios para editar contraseñas y sucursales.
- * - Polling cada 5s.
+ * Admin Dashboard – v3.
+ * Nuevas features:
+ *  - Filtro de Caja (dentro de la sucursal seleccionada).
+ *  - KPIs adicionales: Ticket promedio, Items por venta, Hora pico.
+ *  - Distribución por tipo de orden (Mesa / Llevar / Domicilio).
+ *  - Gráfica por caja cuando se selecciona una sucursal específica.
+ *  - Tab Usuarios: crear, editar (todo) y eliminar perfiles.
+ *  - Se quita el bloque duplicado de "Propinas detalladas" (ya en Por método de pago).
  */
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -23,6 +25,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 const POLL_MS = 5000;
 const PIE_COLORS = ["#006400", "#228B22", "#84cc16"];
 const SUCURSAL_COLORS = ["#006400", "#228B22", "#0369A1", "#dc2626", "#a16207"];
+const ORDER_TYPE_LABELS = { mesa: "Mesa", llevar: "Llevar", domicilio: "Domicilio" };
+const ORDER_TYPE_COLORS = { mesa: "#006400", llevar: "#0369A1", domicilio: "#a16207" };
 
 const fmtDateAPI = (d) => format(d, "yyyy-MM-dd");
 
@@ -31,6 +35,7 @@ export default function AdminDashboard() {
 
   const [date, setDate] = useState(new Date());
   const [sucursal, setSucursal] = useState("all");
+  const [caja, setCaja] = useState("all");
   const [sucursales, setSucursales] = useState([]);
   const [tab, setTab] = useState("dashboard");
 
@@ -39,17 +44,54 @@ export default function AdminDashboard() {
   const [products, setProducts] = useState([]);
   const [users, setUsers] = useState([]);
 
-  // cargar sucursales una vez
+  // cajas disponibles = lista única de caja_name de usuarios cashier en esa sucursal
+  const availableCajas = useMemo(() => {
+    if (sucursal === "all") return [];
+    const set = new Set(
+      users.filter((u) => u.role === "cashier" && u.sucursal === sucursal).map((u) => u.caja_name).filter(Boolean)
+    );
+    return Array.from(set);
+  }, [sucursal, users]);
+
   useEffect(() => {
     api.get("/sucursales").then((r) => setSucursales(r.data.sucursales));
   }, []);
 
-  const fetchAll = async () => {
+  useEffect(() => {
+    let cancelled = false;
+    const fetchAll = async () => {
+      const d = fmtDateAPI(date);
+      try {
+        const [s, sl, p, us] = await Promise.all([
+          api.get(`/dashboard?date=${d}&sucursal=${sucursal}&caja=${encodeURIComponent(caja)}`),
+          api.get(`/sales?scope=date&date=${d}&sucursal=${sucursal}&caja=${encodeURIComponent(caja)}`),
+          api.get("/products?include_inactive=true"),
+          api.get("/users"),
+        ]);
+        if (cancelled) return;
+        setStats(s.data);
+        setSales(sl.data);
+        setProducts(p.data);
+        setUsers(us.data);
+      } catch {
+        /* silent */
+      }
+    };
+    fetchAll();
+    const t = setInterval(fetchAll, POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [date, sucursal, caja]);
+
+  // Forzar refresh manual (después de cambios desde UI)
+  const refresh = async () => {
     const d = fmtDateAPI(date);
     try {
       const [s, sl, p, us] = await Promise.all([
-        api.get(`/dashboard?date=${d}&sucursal=${sucursal}`),
-        api.get(`/sales?scope=date&date=${d}&sucursal=${sucursal}`),
+        api.get(`/dashboard?date=${d}&sucursal=${sucursal}&caja=${encodeURIComponent(caja)}`),
+        api.get(`/sales?scope=date&date=${d}&sucursal=${sucursal}&caja=${encodeURIComponent(caja)}`),
         api.get("/products?include_inactive=true"),
         api.get("/users"),
       ]);
@@ -57,31 +99,23 @@ export default function AdminDashboard() {
       setSales(sl.data);
       setProducts(p.data);
       setUsers(us.data);
-    } catch {
-      /* retry on next poll */
-    }
+    } catch { /* silent */ }
   };
 
-  useEffect(() => {
-    fetchAll();
-    const t = setInterval(fetchAll, POLL_MS);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [date, sucursal]);
+  const handleSucursalChange = (s) => {
+    setSucursal(s);
+    setCaja("all");
+  };
 
   const logout = () => {
     clearSession();
     navigate("/", { replace: true });
   };
 
-  const isToday = useMemo(
-    () => fmtDateAPI(date) === fmtDateAPI(new Date()),
-    [date]
-  );
+  const isToday = useMemo(() => fmtDateAPI(date) === fmtDateAPI(new Date()), [date]);
 
   return (
     <div className="min-h-screen bg-[#F4F4F5] pb-12">
-      {/* Header */}
       <header className="bg-white border-b-2 border-[#006400] px-4 py-3 sticky top-0 z-20">
         <div className="max-w-6xl mx-auto flex items-center justify-between gap-3 flex-wrap">
           <div>
@@ -92,15 +126,13 @@ export default function AdminDashboard() {
               ADMIN
             </h1>
           </div>
-          <div className="flex gap-2">
-            <button
-              data-testid="btn-logout"
-              onClick={logout}
-              className="h-11 px-3 text-xs uppercase tracking-widest font-bold bg-zinc-900 text-white rounded-md tap-scale"
-            >
-              Salir
-            </button>
-          </div>
+          <button
+            data-testid="btn-logout"
+            onClick={logout}
+            className="h-11 px-3 text-xs uppercase tracking-widest font-bold bg-zinc-900 text-white rounded-md tap-scale"
+          >
+            Salir
+          </button>
         </div>
 
         {/* Filtros */}
@@ -115,15 +147,46 @@ export default function AdminDashboard() {
               Hoy
             </button>
           )}
-
-          <SucursalSelect
-            sucursales={sucursales}
-            value={sucursal}
-            onChange={setSucursal}
-          />
+          <SucursalSelect sucursales={sucursales} value={sucursal} onChange={handleSucursalChange} />
         </div>
 
-        {/* Tabs */}
+        {/* Cajas (solo cuando hay sucursal específica) */}
+        {sucursal !== "all" && availableCajas.length > 0 && (
+          <div
+            className="max-w-6xl mx-auto mt-2 flex flex-wrap items-center gap-2"
+            data-testid="caja-filter"
+          >
+            <span className="text-[10px] uppercase tracking-widest font-bold text-zinc-500">
+              Caja:
+            </span>
+            <button
+              data-testid="caja-all"
+              onClick={() => setCaja("all")}
+              className={`h-9 px-3 text-[11px] uppercase tracking-widest font-bold rounded-md border-2 tap-scale whitespace-nowrap ${
+                caja === "all"
+                  ? "bg-zinc-900 text-white border-zinc-900"
+                  : "bg-white text-zinc-900 border-zinc-300"
+              }`}
+            >
+              Todas
+            </button>
+            {availableCajas.map((c) => (
+              <button
+                key={c}
+                data-testid={`caja-${c}`}
+                onClick={() => setCaja(c)}
+                className={`h-9 px-3 text-[11px] uppercase tracking-widest font-bold rounded-md border-2 tap-scale whitespace-nowrap ${
+                  caja === c
+                    ? "bg-[#006400] text-white border-[#006400]"
+                    : "bg-white text-[#006400] border-[#006400]"
+                }`}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+        )}
+
         <nav className="max-w-6xl mx-auto mt-3 flex gap-1.5 overflow-x-auto">
           {[
             ["dashboard", "Dashboard"],
@@ -148,15 +211,11 @@ export default function AdminDashboard() {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 pt-5 space-y-5">
-        {tab === "dashboard" && (
-          <DashboardTab stats={stats} sucursal={sucursal} />
-        )}
+        {tab === "dashboard" && <DashboardTab stats={stats} sucursal={sucursal} />}
         {tab === "sales" && <SalesTab sales={sales} />}
-        {tab === "products" && (
-          <ProductsTab products={products} reload={fetchAll} />
-        )}
+        {tab === "products" && <ProductsTab products={products} reload={refresh} />}
         {tab === "users" && (
-          <UsersTab users={users} sucursales={sucursales} reload={fetchAll} />
+          <UsersTab users={users} sucursales={sucursales} reload={refresh} />
         )}
       </main>
     </div>
@@ -164,7 +223,7 @@ export default function AdminDashboard() {
 }
 
 // ----------------------------------------------------------------------------
-// Date Picker (shadcn calendar inside popover)
+// Date picker
 // ----------------------------------------------------------------------------
 function DatePicker({ date, setDate }) {
   const [open, setOpen] = useState(false);
@@ -185,12 +244,7 @@ function DatePicker({ date, setDate }) {
         <Calendar
           mode="single"
           selected={date}
-          onSelect={(d) => {
-            if (d) {
-              setDate(d);
-              setOpen(false);
-            }
-          }}
+          onSelect={(d) => { if (d) { setDate(d); setOpen(false); } }}
           disabled={(d) => d > new Date()}
           initialFocus
           locale={es}
@@ -200,15 +254,9 @@ function DatePicker({ date, setDate }) {
   );
 }
 
-// ----------------------------------------------------------------------------
-// Sucursal Selector
-// ----------------------------------------------------------------------------
 function SucursalSelect({ sucursales, value, onChange }) {
   return (
-    <div
-      className="flex items-center gap-1.5 overflow-x-auto"
-      data-testid="sucursal-filter"
-    >
+    <div className="flex items-center gap-1.5 overflow-x-auto" data-testid="sucursal-filter">
       <button
         data-testid="suc-all"
         onClick={() => onChange("all")}
@@ -254,17 +302,66 @@ function DashboardTab({ stats, sucursal }) {
     ([k, v]) => ({ name: k, total: v.total, count: v.count })
   );
 
+  const cajaData = Object.entries(stats.by_caja || {})
+    .filter(([k]) => k !== "—")
+    .map(([k, v]) => ({ name: k, total: v.total, count: v.count }));
+
+  const orderTypeData = Object.entries(stats.by_order_type || {}).map(([k, v]) => ({
+    key: k, name: ORDER_TYPE_LABELS[k] || k, total: v.total, count: v.count,
+  }));
+
   return (
     <div className="space-y-5" data-testid="dashboard-tab">
       {/* KPIs principales */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         <KpiCard label="Total" value={formatMXN(stats.grand_total)} testid="kpi-total" primary />
-        <KpiCard label="Productos" value={formatMXN(stats.grand_subtotal)} testid="kpi-subtotal" />
-        <KpiCard label="Propinas" value={formatMXN(stats.grand_tip)} testid="kpi-tips" />
         <KpiCard label="# Ventas" value={stats.sales_count} testid="kpi-count" />
+        <KpiCard label="Ticket promedio" value={formatMXN(stats.avg_ticket)} testid="kpi-avg-ticket" />
+        <KpiCard label="Propinas" value={formatMXN(stats.grand_tip)} testid="kpi-tips" />
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <KpiCard label="Productos vendidos" value={stats.total_items} testid="kpi-items-total" />
+        <KpiCard label="Items por venta" value={stats.avg_items} testid="kpi-avg-items" />
+        <KpiCard
+          label="Hora pico"
+          value={stats.peak_hour ? stats.peak_hour.hour : "—"}
+          sub={stats.peak_hour ? formatMXN(stats.peak_hour.total) : ""}
+          testid="kpi-peak-hour"
+        />
+        <KpiCard label="Subtotal productos" value={formatMXN(stats.grand_subtotal)} testid="kpi-subtotal" />
       </div>
 
-      {/* Desglose por método de pago */}
+      {/* Tipo de orden */}
+      <section className="bg-white border-2 border-zinc-100 rounded-md p-4" data-testid="order-type-section">
+        <h2 className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 mb-3">
+          Por tipo de orden
+        </h2>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {orderTypeData.map((o) => (
+            <div
+              key={o.key}
+              data-testid={`ordertype-${o.key}`}
+              className="border-2 border-zinc-100 rounded-md p-3"
+              style={{ borderLeft: `6px solid ${ORDER_TYPE_COLORS[o.key]}` }}
+            >
+              <p className="text-[10px] uppercase tracking-widest font-bold text-zinc-500">
+                {o.name}
+              </p>
+              <p
+                className="font-display text-2xl sm:text-3xl font-black leading-none mt-1"
+                style={{ color: ORDER_TYPE_COLORS[o.key] }}
+              >
+                {formatMXN(o.total)}
+              </p>
+              <p className="text-sm text-zinc-600 mt-1">
+                {o.count} {o.count === 1 ? "venta" : "ventas"}
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Por método de pago */}
       <section className="bg-white border-2 border-zinc-100 rounded-md p-4">
         <h2 className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 mb-3">
           Por método de pago
@@ -288,10 +385,7 @@ function DashboardTab({ stats, sucursal }) {
               {(k === "tarjeta" || k === "transferencia") && (
                 <p className="text-xs uppercase tracking-widest font-bold text-zinc-500 mt-2">
                   Propina:{" "}
-                  <span
-                    className="text-zinc-900 font-black"
-                    data-testid={`tip-${k}`}
-                  >
+                  <span className="text-zinc-900 font-black" data-testid={`tip-${k}`}>
                     {formatMXN(v.tip)}
                   </span>
                 </p>
@@ -301,38 +395,7 @@ function DashboardTab({ stats, sucursal }) {
         </div>
       </section>
 
-      {/* Tarjeta de Propinas separada */}
-      <section
-        className="bg-white border-2 border-zinc-100 rounded-md p-4"
-        data-testid="tip-breakdown"
-      >
-        <h2 className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 mb-3">
-          Propinas detalladas
-        </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <TipBox
-            label="Tarjeta"
-            amount={stats.tip_breakdown?.tarjeta || 0}
-            testid="tipbox-tarjeta"
-            accent="#006400"
-          />
-          <TipBox
-            label="Transferencia"
-            amount={stats.tip_breakdown?.transferencia || 0}
-            testid="tipbox-transferencia"
-            accent="#228B22"
-          />
-          <TipBox
-            label="Total propinas"
-            amount={stats.grand_tip || 0}
-            testid="tipbox-total"
-            accent="#0369A1"
-            bold
-          />
-        </div>
-      </section>
-
-      {/* Por sucursal (solo cuando se ven todas) */}
+      {/* Por sucursal (vista global) */}
       {sucursal === "all" && sucursalData.length > 0 && (
         <section className="bg-white border-2 border-zinc-100 rounded-md p-4">
           <h2 className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 mb-3">
@@ -346,12 +409,27 @@ function DashboardTab({ stats, sucursal }) {
               <Tooltip formatter={(v) => formatMXN(v)} />
               <Bar dataKey="total" radius={[4, 4, 0, 0]}>
                 {sucursalData.map((_, i) => (
-                  <Cell
-                    key={i}
-                    fill={SUCURSAL_COLORS[i % SUCURSAL_COLORS.length]}
-                  />
+                  <Cell key={i} fill={SUCURSAL_COLORS[i % SUCURSAL_COLORS.length]} />
                 ))}
               </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </section>
+      )}
+
+      {/* Por caja (vista de sucursal) */}
+      {sucursal !== "all" && cajaData.length > 0 && (
+        <section className="bg-white border-2 border-zinc-100 rounded-md p-4" data-testid="by-caja-section">
+          <h2 className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 mb-3">
+            Por caja · {sucursal}
+          </h2>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={cajaData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
+              <XAxis dataKey="name" tick={{ fontSize: 11, fontWeight: 700 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip formatter={(v) => formatMXN(v)} />
+              <Bar dataKey="total" fill="#006400" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </section>
@@ -429,7 +507,7 @@ function DashboardTab({ stats, sucursal }) {
   );
 }
 
-function KpiCard({ label, value, testid, primary }) {
+function KpiCard({ label, value, sub, testid, primary }) {
   return (
     <div
       data-testid={testid}
@@ -443,26 +521,7 @@ function KpiCard({ label, value, testid, primary }) {
       <p className={`font-display text-2xl sm:text-3xl font-black leading-none mt-1 ${primary ? "text-white" : "text-zinc-900"}`}>
         {value}
       </p>
-    </div>
-  );
-}
-
-function TipBox({ label, amount, testid, accent, bold }) {
-  return (
-    <div
-      data-testid={testid}
-      className="border-2 border-zinc-100 rounded-md p-3"
-      style={bold ? { borderColor: accent } : {}}
-    >
-      <p className="text-[10px] uppercase tracking-widest font-bold text-zinc-500">
-        {label}
-      </p>
-      <p
-        className="font-display text-2xl sm:text-3xl font-black leading-none mt-1"
-        style={{ color: accent }}
-      >
-        {formatMXN(amount)}
-      </p>
+      {sub && <p className="text-xs text-zinc-500 mt-1 font-bold">{sub}</p>}
     </div>
   );
 }
@@ -503,7 +562,8 @@ function SalesTab({ sales }) {
             <tr className="text-left">
               <Th>Hora</Th>
               <Th>Sucursal</Th>
-              <Th>Cajero</Th>
+              <Th>Caja</Th>
+              <Th>Tipo</Th>
               <Th>Productos</Th>
               <Th>Subtotal</Th>
               <Th>Propina</Th>
@@ -516,7 +576,16 @@ function SalesTab({ sales }) {
               <tr key={s.id} className="border-t border-zinc-100" data-testid={`sale-row-${s.id}`}>
                 <Td>{fmtTime(s.created_at)}</Td>
                 <Td className="font-bold">{s.sucursal || "—"}</Td>
-                <Td className="text-xs text-zinc-600">{s.cashier || "—"}</Td>
+                <Td className="text-xs">
+                  <div className="font-bold">{s.caja || "—"}</div>
+                  <div className="text-zinc-500">{s.cashier || ""}</div>
+                </Td>
+                <Td className="text-xs uppercase tracking-widest font-bold">
+                  {ORDER_TYPE_LABELS[s.order_type] || "—"}
+                  {s.order_type === "mesa" && s.mesa_number && (
+                    <div className="text-zinc-500">#{s.mesa_number}</div>
+                  )}
+                </Td>
                 <Td>
                   <ul className="space-y-0.5">
                     {s.items.map((it, i) => (
@@ -533,6 +602,11 @@ function SalesTab({ sales }) {
                   <span className="text-xs uppercase tracking-widest font-bold">
                     {PAYMENT_LABELS[s.payment_method]}
                   </span>
+                  {s.payment_method === "efectivo" && s.change_given > 0 && (
+                    <div className="text-[10px] text-zinc-500">
+                      Cambio {formatMXN(s.change_given)}
+                    </div>
+                  )}
                 </Td>
               </tr>
             ))}
@@ -559,13 +633,11 @@ function fmtTime(iso) {
       timeZone: "America/Mexico_City",
       hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short",
     });
-  } catch {
-    return iso;
-  }
+  } catch { return iso; }
 }
 
 // ----------------------------------------------------------------------------
-// Products Tab – editor de precios + categoría
+// Products Tab
 // ----------------------------------------------------------------------------
 function ProductsTab({ products, reload }) {
   const [edits, setEdits] = useState({});
@@ -588,11 +660,8 @@ function ProductsTab({ products, reload }) {
       toast.success("Producto actualizado");
       setEdits((s) => { const c = { ...s }; delete c[p.id]; return c; });
       await reload();
-    } catch {
-      toast.error("Error al guardar");
-    } finally {
-      setSavingId(null);
-    }
+    } catch { toast.error("Error al guardar"); }
+    finally { setSavingId(null); }
   };
 
   const toggleActive = async (p) => {
@@ -600,9 +669,7 @@ function ProductsTab({ products, reload }) {
       await api.put(`/products/${p.id}`, { active: !p.active });
       toast.success(p.active ? "Producto ocultado" : "Producto activado");
       await reload();
-    } catch {
-      toast.error("Error");
-    }
+    } catch { toast.error("Error"); }
   };
 
   const create = async () => {
@@ -617,9 +684,7 @@ function ProductsTab({ products, reload }) {
       setCreating({ name: "", price: "", category: "comida" });
       toast.success("Producto creado");
       await reload();
-    } catch {
-      toast.error("Error al crear");
-    }
+    } catch { toast.error("Error al crear"); }
   };
 
   return (
@@ -723,20 +788,53 @@ function ProductsTab({ products, reload }) {
 }
 
 // ----------------------------------------------------------------------------
-// Users Tab – cambiar contraseñas y sucursal
+// Users Tab – CRUD completo
 // ----------------------------------------------------------------------------
 function UsersTab({ users, sucursales, reload }) {
-  const [drafts, setDrafts] = useState({}); // id -> {password, sucursal}
+  const [creating, setCreating] = useState({
+    username: "", password: "", role: "cashier", sucursal: "", caja_name: "Caja 1",
+  });
+  const [drafts, setDrafts] = useState({});
   const [busy, setBusy] = useState(null);
 
-  const setField = (id, k, v) =>
-    setDrafts((d) => ({ ...d, [id]: { ...(d[id] || {}), [k]: v } }));
+  const defaultSucursal = sucursales[0] || "";
+  const effectiveCreatingSucursal = creating.sucursal || defaultSucursal;
+
+  const setField = (id, k, v) => setDrafts((d) => ({ ...d, [id]: { ...(d[id] || {}), [k]: v } }));
+
+  const create = async () => {
+    if (!creating.username.trim() || !creating.password.trim()) {
+      return toast.error("Usuario y contraseña requeridos");
+    }
+    if (creating.role === "cashier" && !effectiveCreatingSucursal) {
+      return toast.error("Selecciona sucursal");
+    }
+    try {
+      await api.post("/users", {
+        username: creating.username.trim(),
+        password: creating.password,
+        role: creating.role,
+        sucursal: creating.role === "cashier" ? effectiveCreatingSucursal : null,
+        caja_name: creating.caja_name || "Caja 1",
+      });
+      toast.success(`Usuario "${creating.username}" creado`);
+      setCreating({
+        username: "", password: "", role: "cashier",
+        sucursal: "", caja_name: "Caja 1",
+      });
+      await reload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Error al crear");
+    }
+  };
 
   const save = async (u) => {
     const d = drafts[u.id] || {};
     const payload = {};
+    if (d.username !== undefined && d.username.trim() !== u.username) payload.username = d.username.trim();
     if (d.password) payload.password = d.password;
     if (d.sucursal !== undefined && d.sucursal !== u.sucursal) payload.sucursal = d.sucursal;
+    if (d.caja_name !== undefined && d.caja_name !== u.caja_name) payload.caja_name = d.caja_name;
     if (Object.keys(payload).length === 0) return toast.info("Sin cambios");
     setBusy(u.id);
     try {
@@ -744,57 +842,150 @@ function UsersTab({ users, sucursales, reload }) {
       toast.success("Usuario actualizado");
       setDrafts((s) => { const c = { ...s }; delete c[u.id]; return c; });
       await reload();
-    } catch {
-      toast.error("Error al guardar");
-    } finally {
-      setBusy(null);
-    }
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Error al guardar");
+    } finally { setBusy(null); }
+  };
+
+  const remove = async (u) => {
+    if (!window.confirm(`¿Eliminar al usuario "${u.username}"?`)) return;
+    setBusy(u.id);
+    try {
+      await api.delete(`/users/${u.id}`);
+      toast.success("Usuario eliminado");
+      await reload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Error al eliminar");
+    } finally { setBusy(null); }
   };
 
   return (
-    <div className="bg-white border-2 border-zinc-100 rounded-md divide-y divide-zinc-100" data-testid="users-tab">
-      {users.map((u) => {
-        const d = drafts[u.id] || {};
-        const sucVal = d.sucursal !== undefined ? d.sucursal : (u.sucursal || "");
-        return (
-          <div key={u.id} className="p-3 flex flex-col sm:flex-row sm:items-center gap-2" data-testid={`user-row-${u.username}`}>
-            <div className="flex-1 min-w-0">
-              <p className="font-black text-lg leading-none">{u.username}</p>
-              <p className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 mt-1">
-                {u.role === "admin" ? "Administrador" : `Cajero · ${u.sucursal || "—"}`}
-              </p>
-            </div>
-            <input
-              type="text"
-              placeholder="Nueva contraseña"
-              value={d.password || ""}
-              onChange={(e) => setField(u.id, "password", e.target.value)}
-              className="h-12 px-3 text-base font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400] w-full sm:w-48"
-              data-testid={`edit-password-${u.username}`}
-            />
-            {u.role === "cashier" && (
-              <select
-                value={sucVal}
-                onChange={(e) => setField(u.id, "sucursal", e.target.value)}
-                className="h-12 px-3 text-base font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400] bg-white"
-                data-testid={`edit-sucursal-${u.username}`}
-              >
-                {sucursales.map((s) => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
-            )}
-            <button
-              onClick={() => save(u)}
-              disabled={busy === u.id}
-              className="h-12 px-4 rounded-md bg-[#006400] text-white text-sm uppercase tracking-widest font-bold active:bg-[#228B22] disabled:bg-zinc-400 tap-scale"
-              data-testid={`btn-save-user-${u.username}`}
+    <div className="space-y-4" data-testid="users-tab">
+      {/* Crear nuevo */}
+      <div className="bg-white border-2 border-zinc-100 rounded-md p-4 space-y-3">
+        <p className="text-[10px] uppercase tracking-widest font-bold text-zinc-500">
+          Crear nuevo usuario
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2">
+          <input
+            data-testid="new-user-username"
+            value={creating.username}
+            onChange={(e) => setCreating((c) => ({ ...c, username: e.target.value }))}
+            placeholder="Usuario"
+            className="h-12 px-3 text-base font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+          />
+          <input
+            data-testid="new-user-password"
+            type="text"
+            value={creating.password}
+            onChange={(e) => setCreating((c) => ({ ...c, password: e.target.value }))}
+            placeholder="Contraseña"
+            className="h-12 px-3 text-base font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+          />
+          <select
+            data-testid="new-user-role"
+            value={creating.role}
+            onChange={(e) => setCreating((c) => ({ ...c, role: e.target.value }))}
+            className="h-12 px-3 text-base font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400] bg-white"
+          >
+            <option value="cashier">Cajero</option>
+            <option value="admin">Administrador</option>
+          </select>
+          <select
+            data-testid="new-user-sucursal"
+            value={effectiveCreatingSucursal}
+            onChange={(e) => setCreating((c) => ({ ...c, sucursal: e.target.value }))}
+            disabled={creating.role !== "cashier"}
+            className="h-12 px-3 text-base font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400] bg-white disabled:bg-zinc-100 disabled:text-zinc-400"
+          >
+            {sucursales.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <input
+            data-testid="new-user-caja"
+            value={creating.caja_name}
+            onChange={(e) => setCreating((c) => ({ ...c, caja_name: e.target.value }))}
+            placeholder="Caja 1"
+            className="h-12 px-3 text-base font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+          />
+          <button
+            data-testid="btn-create-user"
+            onClick={create}
+            className="h-12 px-4 rounded-md bg-[#006400] text-white text-sm uppercase tracking-widest font-bold active:bg-[#228B22] tap-scale"
+          >
+            Crear
+          </button>
+        </div>
+      </div>
+
+      {/* Lista de usuarios */}
+      <div className="bg-white border-2 border-zinc-100 rounded-md divide-y divide-zinc-100">
+        {users.map((u) => {
+          const d = drafts[u.id] || {};
+          const uname = d.username !== undefined ? d.username : u.username;
+          const sucVal = d.sucursal !== undefined ? d.sucursal : (u.sucursal || "");
+          const cajaVal = d.caja_name !== undefined ? d.caja_name : (u.caja_name || "Caja 1");
+          return (
+            <div
+              key={u.id}
+              className="p-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2 items-center"
+              data-testid={`user-row-${u.username}`}
             >
-              Guardar
-            </button>
-          </div>
-        );
-      })}
+              <div>
+                <input
+                  value={uname}
+                  onChange={(e) => setField(u.id, "username", e.target.value)}
+                  className="w-full h-11 px-2 text-sm font-black border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+                  data-testid={`edit-username-${u.username}`}
+                />
+                <p className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 mt-1">
+                  {u.role === "admin" ? "Administrador" : "Cajero"}
+                </p>
+              </div>
+              <input
+                type="text"
+                placeholder="Nueva contraseña"
+                value={d.password || ""}
+                onChange={(e) => setField(u.id, "password", e.target.value)}
+                className="h-11 px-2 text-sm font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+                data-testid={`edit-password-${u.username}`}
+              />
+              {u.role === "cashier" ? (
+                <select
+                  value={sucVal}
+                  onChange={(e) => setField(u.id, "sucursal", e.target.value)}
+                  className="h-11 px-2 text-sm font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400] bg-white"
+                  data-testid={`edit-sucursal-${u.username}`}
+                >
+                  {sucursales.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              ) : <div />}
+              <input
+                value={cajaVal}
+                onChange={(e) => setField(u.id, "caja_name", e.target.value)}
+                placeholder="Caja"
+                className="h-11 px-2 text-sm font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+                data-testid={`edit-caja-${u.username}`}
+              />
+              <button
+                onClick={() => save(u)}
+                disabled={busy === u.id}
+                className="h-11 px-3 rounded-md bg-[#006400] text-white text-xs uppercase tracking-widest font-black active:bg-[#228B22] disabled:bg-zinc-400 tap-scale"
+                data-testid={`btn-save-user-${u.username}`}
+              >
+                Guardar
+              </button>
+              <button
+                onClick={() => remove(u)}
+                disabled={busy === u.id}
+                className="h-11 px-3 rounded-md border-2 border-red-600 text-red-600 text-xs uppercase tracking-widest font-black active:bg-red-50 disabled:opacity-50 tap-scale"
+                data-testid={`btn-delete-user-${u.username}`}
+              >
+                Eliminar
+              </button>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

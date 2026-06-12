@@ -9,6 +9,17 @@ html, body, #root {
   height: 100%;
 }
 
+/* Bloquear pull-to-refresh y bounce overscroll en móvil */
+html, body {
+  overscroll-behavior-y: contain;
+  overscroll-behavior-x: none;
+}
+
+/* Ocultar badge "Made with Emergent" */
+#emergent-badge {
+  display: none !important;
+}
+
 body {
   margin: 0;
   font-family: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI",
