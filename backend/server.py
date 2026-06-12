@@ -8,10 +8,14 @@ Endpoints:
   - /api/admin/login         Verificación simple de admin
 """
 from fastapi import FastAPI, APIRouter, HTTPException, status
+from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import io
+import csv
+import calendar
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
@@ -163,7 +167,69 @@ def today_mx_range_utc():
     return date_range_utc(None)
 
 
-SUCURSALES = ["Valle Dorado", "Mezcalitos", "San Vicente", "3.14", "San Jose"]
+def period_range_utc(period: str, date_str: Optional[str] = None):
+    """Devuelve (start_utc_iso, end_utc_iso, start_mx_date, end_mx_date_inclusive)
+    para una semana o mes que CONTIENE la fecha indicada (o hoy si None)."""
+    if date_str:
+        try:
+            base = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=MX_TZ)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Fecha inválida (YYYY-MM-DD)")
+    else:
+        now_mx = datetime.now(MX_TZ)
+        base = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    if period == "week":
+        # Semana lunes->domingo
+        start_mx = base - timedelta(days=base.weekday())
+        end_mx = start_mx + timedelta(days=7)
+    elif period == "month":
+        start_mx = base.replace(day=1)
+        last_day = calendar.monthrange(base.year, base.month)[1]
+        end_mx = start_mx.replace(day=last_day) + timedelta(days=1)
+    else:
+        raise HTTPException(status_code=400, detail="Periodo inválido (week|month)")
+
+    return (
+        start_mx.astimezone(timezone.utc).isoformat(),
+        end_mx.astimezone(timezone.utc).isoformat(),
+        start_mx,
+        end_mx - timedelta(days=1),  # último día inclusivo
+    )
+
+
+SUCURSALES_DEFAULT = ["Valle Dorado", "Mezcalitos", "San Vicente", "3.14", "San Jose"]
+
+
+class Sucursal(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    sort_order: int = 0
+
+
+class SucursalCreate(BaseModel):
+    name: str
+
+
+class SucursalUpdate(BaseModel):
+    name: Optional[str] = None
+    sort_order: Optional[int] = None
+
+
+async def get_sucursales_names() -> List[str]:
+    docs = await db.sucursales.find({}, {"_id": 0}).sort("sort_order", 1).to_list(100)
+    return [d["name"] for d in docs]
+
+
+async def seed_sucursales_if_empty():
+    count = await db.sucursales.count_documents({})
+    if count == 0:
+        docs = [Sucursal(name=n, sort_order=i + 1).model_dump()
+                for i, n in enumerate(SUCURSALES_DEFAULT)]
+        await db.sucursales.insert_many(docs)
+        logger.info("Seeded %d default sucursales", len(docs))
+
 
 DEFAULT_PRODUCTS = [
     {"name": "Tacos",                "price": 30,  "sort_order": 1,  "category": "comida"},
@@ -268,7 +334,8 @@ async def delete_product(product_id: str):
 async def create_sale(body: SaleCreate):
     if not body.items:
         raise HTTPException(status_code=400, detail="Empty cart")
-    if body.sucursal not in SUCURSALES:
+    valid_sucursales = await get_sucursales_names()
+    if body.sucursal not in valid_sucursales:
         raise HTTPException(status_code=400, detail="Sucursal inválida")
     if body.order_type == "mesa" and not (body.mesa_number and str(body.mesa_number).strip()):
         raise HTTPException(status_code=400, detail="Número de mesa requerido")
@@ -375,7 +442,7 @@ async def dashboard(
     grand_tip = 0.0
     total_items = 0
     tip_breakdown = {"tarjeta": 0.0, "transferencia": 0.0}
-    by_sucursal: dict = {s: {"count": 0, "total": 0.0} for s in SUCURSALES}
+    by_sucursal: dict = {s: {"count": 0, "total": 0.0} for s in (await get_sucursales_names())}
     by_caja: dict = {}  # {caja_name: {count, total}}
 
     for s in sales:
@@ -471,6 +538,327 @@ async def dashboard(
 
 
 # ----------------------------------------------------------------------------
+# Routes – Dashboard de periodo (semana/mes)
+# ----------------------------------------------------------------------------
+DAY_NAMES_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+
+
+async def _aggregate_period(period: str, date: Optional[str], sucursal: Optional[str], caja: Optional[str]):
+    start_iso, end_iso, start_mx, end_mx = period_range_utc(period, date)
+    q: dict = {"created_at": {"$gte": start_iso, "$lt": end_iso}}
+    if sucursal and sucursal != "all":
+        q["sucursal"] = sucursal
+    if caja and caja != "all":
+        q["caja"] = caja
+    sales = await db.sales.find(q, {"_id": 0}).to_list(50000)
+    return sales, start_mx, end_mx
+
+
+@api_router.get("/dashboard/period")
+async def dashboard_period(
+    period: Literal['week', 'month'] = 'week',
+    date: Optional[str] = None,
+    sucursal: Optional[str] = None,
+    caja: Optional[str] = None,
+):
+    """Stats agregadas en una semana o mes."""
+    sales, start_mx, end_mx = await _aggregate_period(period, date, sucursal, caja)
+
+    # Estructuras de agregación
+    by_day: dict = {}              # YYYY-MM-DD -> {count, total}
+    by_day_of_week: dict = {i: {"count": 0, "total": 0.0} for i in range(7)}
+    by_day_hour: dict = {}         # (yyyy-mm-dd, hour) -> total
+    by_hour: dict = {h: 0.0 for h in range(24)}
+    products_count: dict = {}
+    products_amount: dict = {}
+    totals = {
+        "efectivo":      {"count": 0, "amount": 0.0, "tip": 0.0},
+        "transferencia": {"count": 0, "amount": 0.0, "tip": 0.0},
+        "tarjeta":       {"count": 0, "amount": 0.0, "tip": 0.0},
+    }
+    by_order_type = {
+        "mesa":      {"count": 0, "total": 0.0},
+        "llevar":    {"count": 0, "total": 0.0},
+        "domicilio": {"count": 0, "total": 0.0},
+    }
+    by_sucursal: dict = {s: {"count": 0, "total": 0.0} for s in (await get_sucursales_names())}
+    by_caja: dict = {}
+    grand_total = 0.0
+    grand_subtotal = 0.0
+    grand_tip = 0.0
+    total_items = 0
+
+    for s in sales:
+        sub = float(s.get("subtotal", 0))
+        tip = float(s.get("tip", 0))
+        tot = float(s.get("total", sub + tip))
+        pm = s.get("payment_method", "efectivo")
+        ot = s.get("order_type", "mesa")
+
+        try:
+            dt_utc = datetime.fromisoformat(s["created_at"])
+            dt_mx = dt_utc.astimezone(MX_TZ)
+        except Exception:
+            continue
+
+        day_key = dt_mx.strftime("%Y-%m-%d")
+        hour = dt_mx.hour
+        dow = dt_mx.weekday()
+
+        by_day.setdefault(day_key, {"count": 0, "total": 0.0})
+        by_day[day_key]["count"] += 1
+        by_day[day_key]["total"] += tot
+
+        by_day_of_week[dow]["count"] += 1
+        by_day_of_week[dow]["total"] += tot
+
+        dh_key = (day_key, hour)
+        by_day_hour[dh_key] = by_day_hour.get(dh_key, 0.0) + tot
+        by_hour[hour] += tot
+
+        if pm in totals:
+            totals[pm]["count"] += 1
+            totals[pm]["amount"] += sub
+            totals[pm]["tip"] += tip
+        if ot in by_order_type:
+            by_order_type[ot]["count"] += 1
+            by_order_type[ot]["total"] += tot
+        suc = s.get("sucursal", "—")
+        if suc in by_sucursal:
+            by_sucursal[suc]["count"] += 1
+            by_sucursal[suc]["total"] += tot
+        ck = s.get("caja") or "—"
+        by_caja.setdefault(ck, {"count": 0, "total": 0.0})
+        by_caja[ck]["count"] += 1
+        by_caja[ck]["total"] += tot
+
+        for it in s.get("items", []):
+            n = it.get("name", "?")
+            qty = int(it.get("quantity", 0))
+            price = float(it.get("price", 0))
+            products_count[n] = products_count.get(n, 0) + qty
+            products_amount[n] = products_amount.get(n, 0.0) + price * qty
+            total_items += qty
+
+        grand_subtotal += sub
+        grand_tip += tip
+        grand_total += tot
+
+    # Construir serie de días (incluyendo días sin ventas)
+    days_list = []
+    cur = start_mx
+    while cur.date() <= end_mx.date():
+        key = cur.strftime("%Y-%m-%d")
+        d = by_day.get(key, {"count": 0, "total": 0.0})
+        days_list.append({
+            "date": key,
+            "label": cur.strftime("%d %b"),
+            "count": d["count"],
+            "total": round(d["total"], 2),
+        })
+        cur += timedelta(days=1)
+
+    # Mejor día / peor día
+    best_day = None
+    if days_list:
+        bd = max(days_list, key=lambda x: x["total"])
+        if bd["total"] > 0:
+            best_day = bd
+
+    # Mejor combinación día+hora
+    best_day_hour = None
+    if by_day_hour:
+        (dh_date, dh_hour), dh_total = max(by_day_hour.items(), key=lambda x: x[1])
+        if dh_total > 0:
+            best_day_hour = {
+                "date": dh_date, "hour": f"{dh_hour:02d}:00",
+                "total": round(dh_total, 2),
+            }
+
+    # Día de la semana más fuerte
+    best_dow = None
+    if any(v["total"] > 0 for v in by_day_of_week.values()):
+        idx, val = max(by_day_of_week.items(), key=lambda x: x[1]["total"])
+        best_dow = {"name": DAY_NAMES_ES[idx], "total": round(val["total"], 2),
+                    "count": val["count"]}
+
+    sales_count = len(sales)
+    avg_ticket = round(grand_total / sales_count, 2) if sales_count else 0
+    avg_items = round(total_items / sales_count, 2) if sales_count else 0
+    days_with_sales = sum(1 for d in days_list if d["count"] > 0)
+    avg_daily = round(grand_total / days_with_sales, 2) if days_with_sales else 0
+
+    top_products = sorted(
+        [{"name": k, "quantity": v, "revenue": round(products_amount.get(k, 0), 2)}
+         for k, v in products_count.items()],
+        key=lambda x: x["quantity"], reverse=True
+    )
+
+    return {
+        "period": period,
+        "start": start_mx.strftime("%Y-%m-%d"),
+        "end": end_mx.strftime("%Y-%m-%d"),
+        "sucursal": sucursal or "all",
+        "caja": caja or "all",
+        "grand_total": round(grand_total, 2),
+        "grand_subtotal": round(grand_subtotal, 2),
+        "grand_tip": round(grand_tip, 2),
+        "sales_count": sales_count,
+        "total_items": total_items,
+        "avg_ticket": avg_ticket,
+        "avg_items": avg_items,
+        "avg_daily": avg_daily,
+        "days_with_sales": days_with_sales,
+        "best_day": best_day,
+        "best_day_hour": best_day_hour,
+        "best_dow": best_dow,
+        "by_day": days_list,
+        "by_day_of_week": [
+            {"name": DAY_NAMES_ES[i], "count": v["count"], "total": round(v["total"], 2)}
+            for i, v in by_day_of_week.items()
+        ],
+        "by_hour": [{"hour": f"{h:02d}:00", "total": round(by_hour[h], 2)} for h in range(24)],
+        "by_payment": {k: {"count": v["count"], "amount": round(v["amount"], 2),
+                           "tip": round(v["tip"], 2)} for k, v in totals.items()},
+        "by_order_type": {k: {"count": v["count"], "total": round(v["total"], 2)}
+                          for k, v in by_order_type.items()},
+        "by_sucursal": {k: {"count": v["count"], "total": round(v["total"], 2)}
+                        for k, v in by_sucursal.items()},
+        "by_caja": {k: {"count": v["count"], "total": round(v["total"], 2)}
+                    for k, v in by_caja.items()},
+        "top_products": top_products,
+    }
+
+
+# ----------------------------------------------------------------------------
+# Routes – Reporte CSV
+# ----------------------------------------------------------------------------
+@api_router.get("/reports/csv")
+async def report_csv(
+    period: Literal['week', 'month'] = 'week',
+    date: Optional[str] = None,
+    sucursal: Optional[str] = None,
+    caja: Optional[str] = None,
+):
+    """CSV con KPIs por día y por sucursal en el periodo indicado."""
+    start_iso, end_iso, start_mx, end_mx = period_range_utc(period, date)
+    q: dict = {"created_at": {"$gte": start_iso, "$lt": end_iso}}
+    if sucursal and sucursal != "all":
+        q["sucursal"] = sucursal
+    if caja and caja != "all":
+        q["caja"] = caja
+    sales = await db.sales.find(q, {"_id": 0}).to_list(50000)
+
+    # agrupar por (date, sucursal)
+    buckets: dict = {}
+    for s in sales:
+        try:
+            dt_mx = datetime.fromisoformat(s["created_at"]).astimezone(MX_TZ)
+        except Exception:
+            continue
+        key = (dt_mx.strftime("%Y-%m-%d"), s.get("sucursal", "—"))
+        b = buckets.setdefault(key, {
+            "count": 0, "total": 0.0, "subtotal": 0.0, "tip": 0.0,
+            "efectivo": 0.0, "transferencia": 0.0, "tarjeta": 0.0,
+            "tip_tarjeta": 0.0, "tip_transferencia": 0.0,
+            "mesa": 0.0, "llevar": 0.0, "domicilio": 0.0,
+            "mesa_n": 0, "llevar_n": 0, "domicilio_n": 0,
+            "items": 0,
+        })
+        sub = float(s.get("subtotal", 0))
+        tip = float(s.get("tip", 0))
+        tot = float(s.get("total", sub + tip))
+        pm = s.get("payment_method", "efectivo")
+        ot = s.get("order_type", "mesa")
+        b["count"] += 1
+        b["total"] += tot
+        b["subtotal"] += sub
+        b["tip"] += tip
+        if pm in ("efectivo", "transferencia", "tarjeta"):
+            b[pm] += sub
+        if pm == "tarjeta":
+            b["tip_tarjeta"] += tip
+        if pm == "transferencia":
+            b["tip_transferencia"] += tip
+        if ot in ("mesa", "llevar", "domicilio"):
+            b[ot] += tot
+            b[f"{ot}_n"] += 1
+        for it in s.get("items", []):
+            b["items"] += int(it.get("quantity", 0))
+
+    # generar CSV
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([
+        "Fecha", "Sucursal", "Ventas", "Total", "Subtotal", "Propinas",
+        "Ticket promedio", "Items vendidos",
+        "Efectivo", "Transferencia", "Tarjeta",
+        "Propina tarjeta", "Propina transferencia",
+        "Mesa (total)", "Mesa (#)", "Llevar (total)", "Llevar (#)",
+        "Domicilio (total)", "Domicilio (#)",
+    ])
+
+    cur = start_mx
+    suc_filter = sucursal if sucursal and sucursal != "all" else None
+    sucursal_list = (await get_sucursales_names()) if not suc_filter else [suc_filter]
+
+    while cur.date() <= end_mx.date():
+        date_key = cur.strftime("%Y-%m-%d")
+        for suc in sucursal_list:
+            b = buckets.get((date_key, suc))
+            if not b:
+                continue
+            avg = (b["total"] / b["count"]) if b["count"] else 0
+            w.writerow([
+                date_key, suc, b["count"],
+                f"{b['total']:.2f}", f"{b['subtotal']:.2f}", f"{b['tip']:.2f}",
+                f"{avg:.2f}", b["items"],
+                f"{b['efectivo']:.2f}", f"{b['transferencia']:.2f}", f"{b['tarjeta']:.2f}",
+                f"{b['tip_tarjeta']:.2f}", f"{b['tip_transferencia']:.2f}",
+                f"{b['mesa']:.2f}", b["mesa_n"],
+                f"{b['llevar']:.2f}", b["llevar_n"],
+                f"{b['domicilio']:.2f}", b["domicilio_n"],
+            ])
+        cur += timedelta(days=1)
+
+    # totales
+    if buckets:
+        tot_total = sum(b["total"] for b in buckets.values())
+        tot_count = sum(b["count"] for b in buckets.values())
+        tot_avg = (tot_total / tot_count) if tot_count else 0
+        w.writerow([])
+        w.writerow([
+            "TOTAL", f"{len(sucursal_list)} sucursales" if len(sucursal_list) > 1 else sucursal_list[0],
+            tot_count, f"{tot_total:.2f}",
+            f"{sum(b['subtotal'] for b in buckets.values()):.2f}",
+            f"{sum(b['tip'] for b in buckets.values()):.2f}",
+            f"{tot_avg:.2f}",
+            sum(b["items"] for b in buckets.values()),
+            f"{sum(b['efectivo'] for b in buckets.values()):.2f}",
+            f"{sum(b['transferencia'] for b in buckets.values()):.2f}",
+            f"{sum(b['tarjeta'] for b in buckets.values()):.2f}",
+            f"{sum(b['tip_tarjeta'] for b in buckets.values()):.2f}",
+            f"{sum(b['tip_transferencia'] for b in buckets.values()):.2f}",
+            f"{sum(b['mesa'] for b in buckets.values()):.2f}",
+            sum(b["mesa_n"] for b in buckets.values()),
+            f"{sum(b['llevar'] for b in buckets.values()):.2f}",
+            sum(b["llevar_n"] for b in buckets.values()),
+            f"{sum(b['domicilio'] for b in buckets.values()):.2f}",
+            sum(b["domicilio_n"] for b in buckets.values()),
+        ])
+
+    buf.seek(0)
+    filename = f"reporte_{period}_{start_mx.strftime('%Y%m%d')}_{end_mx.strftime('%Y%m%d')}.csv"
+    # BOM para Excel UTF-8
+    content = "\ufeff" + buf.getvalue()
+    return StreamingResponse(
+        iter([content]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ----------------------------------------------------------------------------
 # Routes – Auth (login) y administración de usuarios
 # ----------------------------------------------------------------------------
 @api_router.post("/auth/login")
@@ -500,12 +888,73 @@ async def admin_login(body: LoginRequest):
 
 @api_router.get("/sucursales")
 async def list_sucursales():
-    return {"sucursales": SUCURSALES}
+    docs = await db.sucursales.find({}, {"_id": 0}).sort("sort_order", 1).to_list(200)
+    return {"sucursales": [d["name"] for d in docs], "items": docs}
+
+
+@api_router.post("/sucursales", response_model=Sucursal)
+async def create_sucursal(body: SucursalCreate):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Nombre requerido")
+    existing = await db.sucursales.find_one({"name": name})
+    if existing:
+        raise HTTPException(status_code=409, detail="Esa sucursal ya existe")
+    max_order = await db.sucursales.find({}, {"_id": 0, "sort_order": 1}).sort("sort_order", -1).limit(1).to_list(1)
+    next_order = (max_order[0]["sort_order"] if max_order else 0) + 1
+    suc = Sucursal(name=name, sort_order=next_order)
+    await db.sucursales.insert_one(suc.model_dump())
+    return suc
+
+
+@api_router.put("/sucursales/{sucursal_id}", response_model=Sucursal)
+async def update_sucursal(sucursal_id: str, body: SucursalUpdate):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not fields:
+        raise HTTPException(status_code=400, detail="Sin cambios")
+    target = await db.sucursales.find_one({"id": sucursal_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    if "name" in fields:
+        new_name = fields["name"].strip()
+        if not new_name:
+            raise HTTPException(status_code=400, detail="Nombre requerido")
+        fields["name"] = new_name
+        dup = await db.sucursales.find_one({"name": new_name, "id": {"$ne": sucursal_id}})
+        if dup:
+            raise HTTPException(status_code=409, detail="Esa sucursal ya existe")
+        old_name = target["name"]
+        # Propagar cambio a usuarios y ventas existentes
+        if new_name != old_name:
+            await db.users.update_many({"sucursal": old_name}, {"$set": {"sucursal": new_name}})
+            await db.sales.update_many({"sucursal": old_name}, {"$set": {"sucursal": new_name}})
+    res = await db.sucursales.find_one_and_update(
+        {"id": sucursal_id}, {"$set": fields},
+        projection={"_id": 0}, return_document=True,
+    )
+    return Sucursal(**res)
+
+
+@api_router.delete("/sucursales/{sucursal_id}")
+async def delete_sucursal(sucursal_id: str):
+    target = await db.sucursales.find_one({"id": sucursal_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="Sucursal no encontrada")
+    # Bloquear si hay usuarios asignados
+    users_count = await db.users.count_documents({"sucursal": target["name"]})
+    if users_count > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No se puede eliminar: hay {users_count} usuario(s) asignado(s)",
+        )
+    await db.sucursales.delete_one({"id": sucursal_id})
+    return {"ok": True}
 
 
 @api_router.get("/users")
-async def list_users():
-    users = await db.users.find({}, {"_id": 0, "password": 0}).sort("role", 1).to_list(200)
+async def list_users(include_passwords: bool = False):
+    projection = {"_id": 0} if include_passwords else {"_id": 0, "password": 0}
+    users = await db.users.find({}, projection).sort("role", 1).to_list(500)
     return users
 
 
@@ -515,7 +964,8 @@ async def create_user(body: UserCreate):
         raise HTTPException(status_code=400, detail="Usuario requerido")
     if not body.password.strip():
         raise HTTPException(status_code=400, detail="Contraseña requerida")
-    if body.role == "cashier" and (not body.sucursal or body.sucursal not in SUCURSALES):
+    valid_sucursales = await get_sucursales_names()
+    if body.role == "cashier" and (not body.sucursal or body.sucursal not in valid_sucursales):
         raise HTTPException(status_code=400, detail="Sucursal inválida")
     existing = await db.users.find_one({"username": body.username.strip()})
     if existing:
@@ -589,6 +1039,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def on_startup():
+    await seed_sucursales_if_empty()
     await seed_products_if_empty()
     await seed_users_if_empty()
 

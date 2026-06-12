@@ -36,13 +36,17 @@ export default function AdminDashboard() {
   const [date, setDate] = useState(new Date());
   const [sucursal, setSucursal] = useState("all");
   const [caja, setCaja] = useState("all");
-  const [sucursales, setSucursales] = useState([]);
+  const [sucursales, setSucursales] = useState([]);     // ["Valle Dorado", ...]
+  const [sucursalItems, setSucursalItems] = useState([]); // [{id, name, sort_order}]
   const [tab, setTab] = useState("dashboard");
+  const [periodMode, setPeriodMode] = useState("week"); // "week" | "month"
 
   const [stats, setStats] = useState(null);
+  const [periodStats, setPeriodStats] = useState(null);
   const [sales, setSales] = useState([]);
   const [products, setProducts] = useState([]);
   const [users, setUsers] = useState([]);
+  const [showPasswords, setShowPasswords] = useState(false);
 
   // cajas disponibles = lista única de caja_name de usuarios cashier en esa sucursal
   const availableCajas = useMemo(() => {
@@ -54,7 +58,10 @@ export default function AdminDashboard() {
   }, [sucursal, users]);
 
   useEffect(() => {
-    api.get("/sucursales").then((r) => setSucursales(r.data.sucursales));
+    api.get("/sucursales").then((r) => {
+      setSucursales(r.data.sucursales);
+      setSucursalItems(r.data.items || []);
+    });
   }, []);
 
   useEffect(() => {
@@ -62,17 +69,23 @@ export default function AdminDashboard() {
     const fetchAll = async () => {
       const d = fmtDateAPI(date);
       try {
-        const [s, sl, p, us] = await Promise.all([
+        const passQuery = showPasswords ? "?include_passwords=true" : "";
+        const calls = [
           api.get(`/dashboard?date=${d}&sucursal=${sucursal}&caja=${encodeURIComponent(caja)}`),
           api.get(`/sales?scope=date&date=${d}&sucursal=${sucursal}&caja=${encodeURIComponent(caja)}`),
           api.get("/products?include_inactive=true"),
-          api.get("/users"),
-        ]);
+          api.get(`/users${passQuery}`),
+        ];
+        if (tab === "periodo") {
+          calls.push(api.get(`/dashboard/period?period=${periodMode}&date=${d}&sucursal=${sucursal}&caja=${encodeURIComponent(caja)}`));
+        }
+        const results = await Promise.all(calls);
         if (cancelled) return;
-        setStats(s.data);
-        setSales(sl.data);
-        setProducts(p.data);
-        setUsers(us.data);
+        setStats(results[0].data);
+        setSales(results[1].data);
+        setProducts(results[2].data);
+        setUsers(results[3].data);
+        if (tab === "periodo") setPeriodStats(results[4].data);
       } catch {
         /* silent */
       }
@@ -83,22 +96,27 @@ export default function AdminDashboard() {
       cancelled = true;
       clearInterval(t);
     };
-  }, [date, sucursal, caja]);
+  }, [date, sucursal, caja, showPasswords, tab, periodMode]);
 
   // Forzar refresh manual (después de cambios desde UI)
   const refresh = async () => {
     const d = fmtDateAPI(date);
     try {
+      const passQuery = showPasswords ? "?include_passwords=true" : "";
       const [s, sl, p, us] = await Promise.all([
         api.get(`/dashboard?date=${d}&sucursal=${sucursal}&caja=${encodeURIComponent(caja)}`),
         api.get(`/sales?scope=date&date=${d}&sucursal=${sucursal}&caja=${encodeURIComponent(caja)}`),
         api.get("/products?include_inactive=true"),
-        api.get("/users"),
+        api.get(`/users${passQuery}`),
       ]);
       setStats(s.data);
       setSales(sl.data);
       setProducts(p.data);
       setUsers(us.data);
+      // refresh sucursales list también
+      const sucRes = await api.get("/sucursales");
+      setSucursales(sucRes.data.sucursales);
+      setSucursalItems(sucRes.data.items || []);
     } catch { /* silent */ }
   };
 
@@ -189,9 +207,11 @@ export default function AdminDashboard() {
 
         <nav className="max-w-6xl mx-auto mt-3 flex gap-1.5 overflow-x-auto">
           {[
-            ["dashboard", "Dashboard"],
+            ["dashboard", "Hoy"],
+            ["periodo", "Periodo"],
             ["sales", "Ventas"],
             ["products", "Precios"],
+            ["sucursales", "Sucursales"],
             ["users", "Usuarios"],
           ].map(([k, label]) => (
             <button
@@ -212,10 +232,29 @@ export default function AdminDashboard() {
 
       <main className="max-w-6xl mx-auto px-4 pt-5 space-y-5">
         {tab === "dashboard" && <DashboardTab stats={stats} sucursal={sucursal} />}
+        {tab === "periodo" && (
+          <PeriodTab
+            stats={periodStats}
+            periodMode={periodMode}
+            setPeriodMode={setPeriodMode}
+            date={date}
+            sucursal={sucursal}
+            caja={caja}
+          />
+        )}
         {tab === "sales" && <SalesTab sales={sales} />}
         {tab === "products" && <ProductsTab products={products} reload={refresh} />}
+        {tab === "sucursales" && (
+          <SucursalesTab items={sucursalItems} reload={refresh} />
+        )}
         {tab === "users" && (
-          <UsersTab users={users} sucursales={sucursales} reload={refresh} />
+          <UsersTab
+            users={users}
+            sucursales={sucursales}
+            reload={refresh}
+            showPasswords={showPasswords}
+            setShowPasswords={setShowPasswords}
+          />
         )}
       </main>
     </div>
@@ -790,13 +829,12 @@ function ProductsTab({ products, reload }) {
 // ----------------------------------------------------------------------------
 // Users Tab – CRUD completo
 // ----------------------------------------------------------------------------
-function UsersTab({ users, sucursales, reload }) {
+function UsersTab({ users, sucursales, reload, showPasswords, setShowPasswords }) {
   const [creating, setCreating] = useState({
     username: "", password: "", role: "cashier", sucursal: "", caja_name: "Caja 1",
   });
   const [drafts, setDrafts] = useState({});
   const [busy, setBusy] = useState(null);
-
   const defaultSucursal = sucursales[0] || "";
   const effectiveCreatingSucursal = creating.sucursal || defaultSucursal;
   const adminCount = users.filter((u) => u.role === "admin").length;
@@ -862,6 +900,23 @@ function UsersTab({ users, sucursales, reload }) {
 
   return (
     <div className="space-y-4" data-testid="users-tab">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <p className="text-[10px] uppercase tracking-widest font-bold text-zinc-500">
+          {users.length} usuarios
+        </p>
+        <button
+          data-testid="btn-toggle-passwords"
+          onClick={() => setShowPasswords((v) => !v)}
+          className={`h-10 px-3 text-[11px] uppercase tracking-widest font-bold rounded-md border-2 tap-scale ${
+            showPasswords
+              ? "bg-[#006400] text-white border-[#006400]"
+              : "bg-white text-[#006400] border-[#006400]"
+          }`}
+        >
+          {showPasswords ? "Ocultar contraseñas" : "Mostrar contraseñas"}
+        </button>
+      </div>
+
       {/* Crear nuevo */}
       <div className="bg-white border-2 border-zinc-100 rounded-md p-4 space-y-3">
         <p className="text-[10px] uppercase tracking-widest font-bold text-zinc-500">
@@ -945,9 +1000,9 @@ function UsersTab({ users, sucursales, reload }) {
               <input
                 type="text"
                 placeholder="Nueva contraseña"
-                value={d.password || ""}
+                value={d.password !== undefined ? d.password : (showPasswords ? (u.password || "") : "")}
                 onChange={(e) => setField(u.id, "password", e.target.value)}
-                className="h-11 px-2 text-sm font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+                className="h-11 px-2 text-sm font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400] font-mono"
                 data-testid={`edit-password-${u.username}`}
               />
               {u.role === "cashier" ? (
@@ -988,6 +1043,322 @@ function UsersTab({ users, sucursales, reload }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+
+// ----------------------------------------------------------------------------
+// Sucursales Tab – CRUD de sucursales
+// ----------------------------------------------------------------------------
+function SucursalesTab({ items, reload }) {
+  const [newName, setNewName] = useState("");
+  const [drafts, setDrafts] = useState({});
+  const [busy, setBusy] = useState(null);
+
+  const create = async () => {
+    if (!newName.trim()) return toast.error("Nombre requerido");
+    try {
+      await api.post("/sucursales", { name: newName.trim() });
+      toast.success(`Sucursal "${newName}" creada`);
+      setNewName("");
+      await reload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Error al crear");
+    }
+  };
+
+  const save = async (s) => {
+    const d = drafts[s.id] || {};
+    if (!d.name || d.name.trim() === s.name) return toast.info("Sin cambios");
+    setBusy(s.id);
+    try {
+      await api.put(`/sucursales/${s.id}`, { name: d.name.trim() });
+      toast.success("Sucursal actualizada");
+      setDrafts((st) => { const c = { ...st }; delete c[s.id]; return c; });
+      await reload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Error al guardar");
+    } finally { setBusy(null); }
+  };
+
+  const remove = async (s) => {
+    if (!window.confirm(`¿Eliminar la sucursal "${s.name}"?\nDebe no tener usuarios asignados.`)) return;
+    setBusy(s.id);
+    try {
+      await api.delete(`/sucursales/${s.id}`);
+      toast.success("Sucursal eliminada");
+      await reload();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Error al eliminar");
+    } finally { setBusy(null); }
+  };
+
+  return (
+    <div className="space-y-4" data-testid="sucursales-tab">
+      <div className="bg-white border-2 border-zinc-100 rounded-md p-4">
+        <p className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 mb-2">
+          Nueva sucursal
+        </p>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input
+            data-testid="new-sucursal-name"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="Ej. Centro"
+            className="flex-1 h-12 px-3 text-base font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+          />
+          <button
+            data-testid="btn-create-sucursal"
+            onClick={create}
+            className="h-12 px-4 rounded-md bg-[#006400] text-white text-sm uppercase tracking-widest font-bold active:bg-[#228B22] tap-scale"
+          >
+            Crear
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white border-2 border-zinc-100 rounded-md divide-y divide-zinc-100">
+        {items.map((s) => {
+          const d = drafts[s.id] || {};
+          const nameVal = d.name !== undefined ? d.name : s.name;
+          return (
+            <div
+              key={s.id}
+              data-testid={`sucursal-row-${s.name}`}
+              className="p-3 flex flex-col sm:flex-row sm:items-center gap-2"
+            >
+              <input
+                value={nameVal}
+                onChange={(e) => setDrafts((st) => ({ ...st, [s.id]: { ...(st[s.id] || {}), name: e.target.value } }))}
+                className="flex-1 h-12 px-3 text-base font-black border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+                data-testid={`edit-sucursal-name-${s.name}`}
+              />
+              <button
+                onClick={() => save(s)}
+                disabled={busy === s.id}
+                className="h-12 px-4 rounded-md bg-[#006400] text-white text-sm uppercase tracking-widest font-bold active:bg-[#228B22] disabled:bg-zinc-400 tap-scale"
+                data-testid={`btn-save-sucursal-${s.name}`}
+              >
+                Guardar
+              </button>
+              <button
+                onClick={() => remove(s)}
+                disabled={busy === s.id}
+                className="h-12 px-4 rounded-md border-2 border-red-600 text-red-600 text-sm uppercase tracking-widest font-bold active:bg-red-50 disabled:opacity-50 tap-scale"
+                data-testid={`btn-delete-sucursal-${s.name}`}
+              >
+                Eliminar
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// Period Tab – Dashboard semanal/mensual + exportar CSV
+// ----------------------------------------------------------------------------
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+
+function PeriodTab({ stats, periodMode, setPeriodMode, date, sucursal, caja }) {
+  if (!stats) return <div className="text-zinc-500">Cargando…</div>;
+
+  const downloadCSV = () => {
+    const d = fmtDateAPI(date);
+    const url = `${BACKEND_URL}/api/reports/csv?period=${periodMode}&date=${d}&sucursal=${encodeURIComponent(sucursal)}&caja=${encodeURIComponent(caja)}`;
+    window.open(url, "_blank");
+  };
+
+  return (
+    <div className="space-y-5" data-testid="period-tab">
+      {/* Toggle periodo + CSV */}
+      <div className="flex flex-wrap items-center gap-2 justify-between">
+        <div className="inline-flex rounded-md border-2 border-[#006400] overflow-hidden" data-testid="period-toggle">
+          {[
+            ["week", "Semanal"],
+            ["month", "Mensual"],
+          ].map(([k, label]) => (
+            <button
+              key={k}
+              data-testid={`period-${k}`}
+              onClick={() => setPeriodMode(k)}
+              className={`h-11 px-4 text-xs uppercase tracking-widest font-black tap-scale ${
+                periodMode === k ? "bg-[#006400] text-white" : "bg-white text-[#006400]"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-3">
+          <p className="text-xs uppercase tracking-widest font-bold text-zinc-500" data-testid="period-range">
+            {stats.start} → {stats.end}
+          </p>
+          <button
+            data-testid="btn-export-csv"
+            onClick={downloadCSV}
+            className="h-11 px-4 rounded-md bg-zinc-900 text-white text-xs uppercase tracking-widest font-black tap-scale"
+          >
+            Exportar CSV
+          </button>
+        </div>
+      </div>
+
+      {/* KPIs principales */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <KpiCard label={`Total ${periodMode === "week" ? "semanal" : "mensual"}`}
+                 value={formatMXN(stats.grand_total)} testid="period-kpi-total" primary />
+        <KpiCard label="# Ventas" value={stats.sales_count} testid="period-kpi-count" />
+        <KpiCard label="Promedio diario" value={formatMXN(stats.avg_daily)} testid="period-kpi-daily" />
+        <KpiCard label="Ticket promedio" value={formatMXN(stats.avg_ticket)} testid="period-kpi-avg-ticket" />
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <KpiCard label="Propinas" value={formatMXN(stats.grand_tip)} testid="period-kpi-tips" />
+        <KpiCard label="Productos vendidos" value={stats.total_items} testid="period-kpi-items" />
+        <KpiCard label="Días con ventas" value={stats.days_with_sales} testid="period-kpi-days" />
+        <KpiCard label="Items por venta" value={stats.avg_items} testid="period-kpi-avg-items" />
+      </div>
+
+      {/* Highlights */}
+      <section className="grid grid-cols-1 md:grid-cols-3 gap-3" data-testid="period-highlights">
+        <HighlightCard
+          label="Día más fuerte"
+          value={stats.best_day ? `${stats.best_day.label}` : "—"}
+          sub={stats.best_day ? `${formatMXN(stats.best_day.total)} · ${stats.best_day.count} ventas` : ""}
+          testid="best-day"
+          color="#006400"
+        />
+        <HighlightCard
+          label="Mejor hora"
+          value={stats.best_day_hour ? `${stats.best_day_hour.hour}` : "—"}
+          sub={stats.best_day_hour ? `${stats.best_day_hour.date} · ${formatMXN(stats.best_day_hour.total)}` : ""}
+          testid="best-day-hour"
+          color="#0369A1"
+        />
+        <HighlightCard
+          label="Mejor día de semana"
+          value={stats.best_dow ? stats.best_dow.name : "—"}
+          sub={stats.best_dow ? `${formatMXN(stats.best_dow.total)} · ${stats.best_dow.count} ventas` : ""}
+          testid="best-dow"
+          color="#a16207"
+        />
+      </section>
+
+      {/* Ventas por día */}
+      <section className="bg-white border-2 border-zinc-100 rounded-md p-4" data-testid="chart-by-day">
+        <h3 className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 mb-3">
+          Ventas por día
+        </h3>
+        <ResponsiveContainer width="100%" height={260}>
+          <BarChart data={stats.by_day}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
+            <XAxis dataKey="label" tick={{ fontSize: 10, fontWeight: 700 }} />
+            <YAxis tick={{ fontSize: 11 }} />
+            <Tooltip formatter={(v) => formatMXN(v)} />
+            <Bar dataKey="total" fill="#006400" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </section>
+
+      {/* Por día de la semana */}
+      <section className="bg-white border-2 border-zinc-100 rounded-md p-4" data-testid="chart-by-dow">
+        <h3 className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 mb-3">
+          Por día de la semana
+        </h3>
+        <ResponsiveContainer width="100%" height={240}>
+          <BarChart data={stats.by_day_of_week}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
+            <XAxis dataKey="name" tick={{ fontSize: 11, fontWeight: 700 }} />
+            <YAxis tick={{ fontSize: 11 }} />
+            <Tooltip formatter={(v) => formatMXN(v)} />
+            <Bar dataKey="total" fill="#228B22" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </section>
+
+      {/* Por hora del día (agregado) */}
+      <section className="bg-white border-2 border-zinc-100 rounded-md p-4" data-testid="chart-by-hour">
+        <h3 className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 mb-3">
+          Distribución por hora del día (agregada)
+        </h3>
+        <ResponsiveContainer width="100%" height={240}>
+          <LineChart data={stats.by_hour}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
+            <XAxis dataKey="hour" tick={{ fontSize: 10 }} interval={1} />
+            <YAxis tick={{ fontSize: 11 }} />
+            <Tooltip formatter={(v) => formatMXN(v)} />
+            <Line type="monotone" dataKey="total" stroke="#006400" strokeWidth={3} dot={{ r: 3, fill: "#006400" }} />
+          </LineChart>
+        </ResponsiveContainer>
+      </section>
+
+      {/* Productos top + por sucursal */}
+      <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="bg-white border-2 border-zinc-100 rounded-md p-4">
+          <h3 className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 mb-3">
+            Productos más vendidos
+          </h3>
+          {stats.top_products.length === 0 ? (
+            <EmptyChart />
+          ) : (
+            <ResponsiveContainer width="100%" height={260}>
+              <BarChart data={stats.top_products.slice(0, 10)}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
+                <XAxis dataKey="name" tick={{ fontSize: 10, fontWeight: 700 }}
+                       interval={0} angle={-20} textAnchor="end" height={70} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip />
+                <Bar dataKey="quantity" fill="#006400" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+
+        <div className="bg-white border-2 border-zinc-100 rounded-md p-4">
+          <h3 className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 mb-3">
+            Por sucursal · Periodo
+          </h3>
+          {Object.values(stats.by_sucursal || {}).every((v) => v.total === 0) ? (
+            <EmptyChart />
+          ) : (
+            <ResponsiveContainer width="100%" height={260}>
+              <BarChart data={Object.entries(stats.by_sucursal).map(([k, v]) => ({ name: k, total: v.total }))}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
+                <XAxis dataKey="name" tick={{ fontSize: 11, fontWeight: 700 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(v) => formatMXN(v)} />
+                <Bar dataKey="total" radius={[4, 4, 0, 0]}>
+                  {Object.keys(stats.by_sucursal).map((_, i) => (
+                    <Cell key={i} fill={SUCURSAL_COLORS[i % SUCURSAL_COLORS.length]} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function HighlightCard({ label, value, sub, testid, color }) {
+  return (
+    <div
+      data-testid={testid}
+      className="bg-white border-2 border-zinc-100 rounded-md p-4"
+      style={{ borderLeft: `6px solid ${color}` }}
+    >
+      <p className="text-[10px] uppercase tracking-widest font-bold text-zinc-500">{label}</p>
+      <p
+        className="font-display text-3xl sm:text-4xl font-black leading-none mt-1"
+        style={{ color }}
+      >
+        {value}
+      </p>
+      {sub && <p className="text-sm text-zinc-600 mt-1">{sub}</p>}
     </div>
   );
 }
