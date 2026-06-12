@@ -10,9 +10,20 @@ html, body, #root {
 }
 
 /* Bloquear pull-to-refresh y bounce overscroll en móvil */
-html, body {
-  overscroll-behavior-y: contain;
-  overscroll-behavior-x: none;
+html {
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
+}
+body {
+  overscroll-behavior: none;     /* none, no contain, para bloquear pull-to-refresh */
+  touch-action: pan-x pan-y;     /* permite scroll normal, bloquea gestos de refresh */
+}
+
+/* Aplicar también a los contenedores de scroll internos para evitar bounce */
+[data-testid="product-list"],
+[data-testid="cart-panel"],
+main {
+  overscroll-behavior: none;
 }
 
 /* Ocultar badge "Made with Emergent" */
