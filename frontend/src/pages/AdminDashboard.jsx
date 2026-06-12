@@ -799,6 +799,7 @@ function UsersTab({ users, sucursales, reload }) {
 
   const defaultSucursal = sucursales[0] || "";
   const effectiveCreatingSucursal = creating.sucursal || defaultSucursal;
+  const adminCount = users.filter((u) => u.role === "admin").length;
 
   const setField = (id, k, v) => setDrafts((d) => ({ ...d, [id]: { ...(d[id] || {}), [k]: v } }));
 
@@ -976,8 +977,9 @@ function UsersTab({ users, sucursales, reload }) {
               </button>
               <button
                 onClick={() => remove(u)}
-                disabled={busy === u.id}
-                className="h-11 px-3 rounded-md border-2 border-red-600 text-red-600 text-xs uppercase tracking-widest font-black active:bg-red-50 disabled:opacity-50 tap-scale"
+                disabled={busy === u.id || (u.role === "admin" && adminCount <= 1)}
+                title={u.role === "admin" && adminCount <= 1 ? "No se puede eliminar el único administrador" : ""}
+                className="h-11 px-3 rounded-md border-2 border-red-600 text-red-600 text-xs uppercase tracking-widest font-black active:bg-red-50 disabled:opacity-30 disabled:cursor-not-allowed tap-scale"
                 data-testid={`btn-delete-user-${u.username}`}
               >
                 Eliminar

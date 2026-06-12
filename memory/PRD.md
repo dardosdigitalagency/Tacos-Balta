@@ -32,6 +32,15 @@ Sistema POS mobile-first para taquería con:
 - POS **compacto**: panel inferior reducido, nombres completos sin truncar, etiqueta y color azul para `BEBIDA` vs verde para `COMIDA`
 - Admin: selector de fecha (calendario shadcn), filtro por sucursal, propinas detalladas por método (tarjeta vs transferencia), gráfica de ventas por sucursal, tab `Usuarios` para editar contraseñas y sucursal asignada
 
+## Iteración 3 (Feb 2026)
+- **Propina por porcentaje** (5/10/15/20%) además del monto manual cuando paga con tarjeta/transferencia
+- **Tipo de orden obligatorio**: Mesa, Llevar o Domicilio. Mesa requiere número de mesa
+- **Efectivo**: input "dinero recibido" y muestra cambio automáticamente
+- **Pull-to-refresh bloqueado** en móvil (`overscroll-behavior-y: contain`)
+- **Multicaja**: cada perfil tiene `caja_name`, admin puede CREAR, EDITAR (todo) y ELIMINAR usuarios. El único admin no puede eliminarse.
+- **Estadísticas mejoradas**: KPIs ticket promedio, items por venta, hora pico, total de items. Sección "Por tipo de orden". Filtro y gráfica por caja dentro de cada sucursal.
+- **Badge "Made with Emergent" eliminado** (vía JS + MutationObserver)
+
 ## Backlog / Próximas mejoras
 - P1: Reportes históricos (semana / mes), exportar CSV de ventas
 - P1: Cierre de caja y arqueo
