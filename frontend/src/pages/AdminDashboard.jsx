@@ -210,7 +210,7 @@ export default function AdminDashboard() {
             ["dashboard", "Hoy"],
             ["periodo", "Periodo"],
             ["sales", "Ventas"],
-            ["products", "Precios"],
+            ["products", "Menú"],
             ["sucursales", "Sucursales"],
             ["users", "Usuarios"],
           ].map(([k, label]) => (
@@ -712,6 +712,23 @@ function ProductsTab({ products, reload }) {
     } catch { toast.error("Error"); }
   };
 
+  const [reordering, setReordering] = useState(false);
+  const moveProduct = async (idx, dir) => {
+    const newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= products.length) return;
+    const reordered = [...products];
+    [reordered[idx], reordered[newIdx]] = [reordered[newIdx], reordered[idx]];
+    setReordering(true);
+    try {
+      await api.post("/products/reorder", { ids: reordered.map((p) => p.id) });
+      await reload();
+    } catch {
+      toast.error("Error al reordenar");
+    } finally {
+      setReordering(false);
+    }
+  };
+
   const create = async () => {
     if (!creating.name) return toast.error("Nombre requerido");
     if (creating.pricing_mode === "fixed" && !creating.price) return toast.error("Precio requerido");
@@ -781,7 +798,7 @@ function ProductsTab({ products, reload }) {
       </div>
 
       <div className="bg-white border-2 border-zinc-100 rounded-md divide-y divide-zinc-100">
-        {products.map((p) => {
+        {products.map((p, idx) => {
           const e = edits[p.id] || {};
           const nameVal = e.name !== undefined ? e.name : p.name;
           const priceVal = e.price !== undefined ? e.price : p.price;
@@ -793,6 +810,27 @@ function ProductsTab({ products, reload }) {
               data-testid={`product-edit-${p.id}`}
               className="p-3 flex flex-col sm:flex-row sm:items-center gap-2"
             >
+              {/* Reorder controls */}
+              <div className="flex sm:flex-col gap-1 shrink-0">
+                <button
+                  onClick={() => moveProduct(idx, -1)}
+                  disabled={idx === 0 || reordering}
+                  className="w-9 h-9 sm:w-7 sm:h-7 rounded-md bg-zinc-100 text-sm font-bold active:bg-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed tap-scale"
+                  data-testid={`btn-move-up-${p.id}`}
+                  title="Mover arriba"
+                >
+                  ↑
+                </button>
+                <button
+                  onClick={() => moveProduct(idx, +1)}
+                  disabled={idx === products.length - 1 || reordering}
+                  className="w-9 h-9 sm:w-7 sm:h-7 rounded-md bg-zinc-100 text-sm font-bold active:bg-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed tap-scale"
+                  data-testid={`btn-move-down-${p.id}`}
+                  title="Mover abajo"
+                >
+                  ↓
+                </button>
+              </div>
               <input
                 value={nameVal}
                 onChange={(ev) => setField(p.id, "name", ev.target.value)}

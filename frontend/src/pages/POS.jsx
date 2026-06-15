@@ -254,15 +254,15 @@ export default function POS() {
     <div className="flex flex-col h-screen overflow-hidden">
       {/* Header */}
       <header
-        className="flex items-center justify-between px-3 py-2 bg-white border-b-2 border-[#006400]"
+        className="flex items-center justify-between px-4 py-3 bg-white shadow-sm"
         data-testid="pos-header"
       >
         <div className="min-w-0 flex-1">
-          <p className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 leading-none">
+          <p className="text-[10px] uppercase tracking-widest font-bold text-zinc-400 leading-none">
             {cashier}
           </p>
           <h1
-            className="font-display text-xl font-black text-[#006400] leading-tight truncate"
+            className="font-display text-xl font-black text-[#006400] leading-tight truncate mt-0.5"
             data-testid="pos-sucursal"
           >
             {sucursal || "—"}
@@ -271,7 +271,7 @@ export default function POS() {
         <button
           data-testid="btn-logout"
           onClick={logout}
-          className="h-10 px-3 text-[11px] uppercase tracking-widest font-bold border-2 border-zinc-300 text-zinc-700 rounded-md tap-scale"
+          className="h-10 px-3 text-[11px] uppercase tracking-widest font-bold text-zinc-500 rounded-lg hover:bg-zinc-100 active:bg-zinc-200 tap-scale transition-colors"
         >
           Salir
         </button>
@@ -371,39 +371,33 @@ export default function POS() {
 }
 
 // ----------------------------------------------------------------------------
-// Product Row (fixed)
+// Product Row (fixed) - diseño limpio sin etiqueta, color por barra lateral
 // ----------------------------------------------------------------------------
 function ProductRow({ product, qty, onInc, onDec, onChange }) {
   const selected = qty > 0;
   const isDrink = product.category === "bebida";
   const accent = isDrink ? "#0369A1" : "#006400";
-  const tagBg = isDrink
-    ? "bg-sky-50 text-sky-800"
-    : "bg-emerald-50 text-emerald-900";
-  const tagText = isDrink ? "BEBIDA" : "COMIDA";
 
   return (
     <div
       data-testid={`product-row-${product.id}`}
-      style={{ borderColor: selected ? accent : "transparent" }}
-      className="bg-white rounded-md border-2 px-3 py-2 flex items-center justify-between gap-2"
+      style={{
+        boxShadow: selected
+          ? `inset 4px 0 0 0 ${accent}, 0 1px 2px rgba(0,0,0,0.04)`
+          : `inset 4px 0 0 0 ${isDrink ? "#bae6fd" : "#bbf7d0"}, 0 1px 2px rgba(0,0,0,0.04)`,
+        transition: "box-shadow 0.18s ease",
+      }}
+      className="bg-white rounded-xl pl-4 pr-3 py-2.5 flex items-center justify-between gap-2"
     >
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span
-            className={`text-[9px] uppercase tracking-widest font-black px-1.5 py-0.5 rounded ${tagBg}`}
-          >
-            {tagText}
-          </span>
-          <p
-            className="font-bold text-base sm:text-lg leading-tight text-zinc-900 break-words"
-            style={{ wordBreak: "break-word" }}
-          >
-            {product.name}
-          </p>
-        </div>
         <p
-          className="font-display text-xl sm:text-2xl font-black leading-none mt-0.5"
+          className="font-bold text-base sm:text-lg leading-tight text-zinc-900 break-words"
+          style={{ wordBreak: "break-word" }}
+        >
+          {product.name}
+        </p>
+        <p
+          className="font-display text-xl sm:text-2xl font-black leading-none mt-1"
           style={{ color: accent }}
         >
           {formatMXN(product.price)}
@@ -414,7 +408,7 @@ function ProductRow({ product, qty, onInc, onDec, onChange }) {
           data-testid={`btn-dec-${product.id}`}
           onClick={onDec}
           aria-label={`Restar ${product.name}`}
-          className="w-11 h-11 sm:w-12 sm:h-12 rounded-md bg-zinc-100 text-2xl font-black text-zinc-900 active:bg-zinc-300 tap-scale"
+          className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-zinc-100 text-2xl font-black text-zinc-900 active:bg-zinc-200 tap-scale transition-colors"
         >
           −
         </button>
@@ -424,7 +418,7 @@ function ProductRow({ product, qty, onInc, onDec, onChange }) {
           inputMode="numeric"
           value={qty}
           onChange={(e) => onChange(e.target.value)}
-          className="w-12 sm:w-14 h-11 sm:h-12 text-center text-xl font-black border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+          className="w-12 sm:w-14 h-11 sm:h-12 text-center text-xl font-black border border-zinc-200 rounded-lg outline-none focus:border-[#006400] focus:ring-2 focus:ring-[#006400]/20"
           min="0"
         />
         <button
@@ -432,7 +426,7 @@ function ProductRow({ product, qty, onInc, onDec, onChange }) {
           onClick={onInc}
           aria-label={`Sumar ${product.name}`}
           style={{ backgroundColor: accent }}
-          className="w-11 h-11 sm:w-12 sm:h-12 rounded-md text-white text-2xl font-black tap-scale"
+          className="w-11 h-11 sm:w-12 sm:h-12 rounded-full text-white text-2xl font-black tap-scale shadow-sm active:shadow-inner transition-shadow"
         >
           +
         </button>
@@ -442,36 +436,34 @@ function ProductRow({ product, qty, onInc, onDec, onChange }) {
 }
 
 // ----------------------------------------------------------------------------
-// Variable Product Row (precio se ingresa al cobrar — ej. Birria por peso)
+// Variable Product Row
 // ----------------------------------------------------------------------------
 function VariableProductRow({ product, onAdd }) {
   const [amount, setAmount] = useState("");
-  const accent = "#a16207"; // ámbar
+  const accent = "#a16207";
   const handleAdd = () => {
     if (onAdd(amount)) setAmount("");
   };
   return (
     <div
       data-testid={`variable-product-${product.id}`}
-      className="bg-white rounded-md border-2 border-amber-200 px-3 py-2 flex items-center justify-between gap-2"
+      style={{
+        boxShadow: "inset 4px 0 0 0 #fcd34d, 0 1px 2px rgba(0,0,0,0.04)",
+      }}
+      className="bg-white rounded-xl pl-4 pr-3 py-2.5 flex items-center justify-between gap-2"
     >
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[9px] uppercase tracking-widest font-black px-1.5 py-0.5 rounded bg-amber-100 text-amber-900">
-            POR PESO
-          </span>
-          <p
-            className="font-bold text-base sm:text-lg leading-tight text-zinc-900 break-words"
-            style={{ wordBreak: "break-word" }}
-          >
-            {product.name}
-          </p>
-        </div>
         <p
-          className="text-xs sm:text-sm text-zinc-500 leading-none mt-1"
+          className="font-bold text-base sm:text-lg leading-tight text-zinc-900 break-words"
+          style={{ wordBreak: "break-word" }}
+        >
+          {product.name}
+        </p>
+        <p
+          className="text-[11px] sm:text-xs leading-none mt-1 font-semibold"
           style={{ color: accent }}
         >
-          Ingresa el monto en pesos
+          ✏ Precio libre
         </p>
       </div>
       <div className="flex items-center gap-1.5 shrink-0">
@@ -489,7 +481,7 @@ function VariableProductRow({ product, onAdd }) {
               if (e.key === "Enter") handleAdd();
             }}
             placeholder="100"
-            className="w-24 sm:w-28 h-11 sm:h-12 pl-6 pr-2 text-lg font-black border-2 border-zinc-200 rounded-md outline-none focus:border-amber-500"
+            className="w-24 sm:w-28 h-11 sm:h-12 pl-6 pr-2 text-lg font-black border border-zinc-200 rounded-lg outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20"
             min="0"
           />
         </div>
@@ -497,7 +489,7 @@ function VariableProductRow({ product, onAdd }) {
           data-testid={`btn-add-var-${product.id}`}
           onClick={handleAdd}
           style={{ backgroundColor: accent }}
-          className="h-11 sm:h-12 px-3 rounded-md text-white text-xs uppercase tracking-wider font-black tap-scale"
+          className="h-11 sm:h-12 px-4 rounded-lg text-white text-xs uppercase tracking-wider font-black tap-scale shadow-sm"
         >
           Agregar
         </button>
@@ -526,7 +518,7 @@ function CartPanel({
 
   return (
     <section
-      className="bg-white border-t-4 border-[#006400] shadow-[0_-6px_24px_rgba(0,0,0,0.08)] max-h-[75vh] overflow-y-auto"
+      className="bg-white rounded-t-2xl shadow-[0_-8px_32px_rgba(0,0,0,0.08)] max-h-[75vh] overflow-y-auto"
       data-testid="cart-panel"
     >
       {/* Detalle items */}
@@ -606,10 +598,10 @@ function CartPanel({
                 key={o.value}
                 data-testid={`btn-ordertype-${o.value}`}
                 onClick={() => setOrderType(o.value)}
-                className={`h-10 rounded-md text-[11px] uppercase tracking-widest font-black border-2 tap-scale ${
+                className={`h-10 rounded-lg text-[11px] uppercase tracking-widest font-black tap-scale transition-all ${
                   active
-                    ? "bg-zinc-900 text-white border-zinc-900"
-                    : "bg-white text-zinc-900 border-zinc-300"
+                    ? "bg-zinc-900 text-white shadow-sm"
+                    : "bg-zinc-100 text-zinc-700 active:bg-zinc-200"
                 }`}
               >
                 {o.label}
@@ -618,25 +610,20 @@ function CartPanel({
           })}
         </div>
         {orderType === "mesa" && (
-          <div className="mt-1.5 space-y-1.5" data-testid="mesa-area">
-            <div className="flex items-center gap-2">
-              <label className="text-[10px] uppercase tracking-widest font-black text-zinc-500 w-14">
-                Mesa
-              </label>
-              <input
-                data-testid="input-mesa"
-                type="text"
-                value={mesaNumber}
-                onChange={(e) => setMesaNumber(e.target.value)}
-                placeholder="Ej. 5"
-                className="flex-1 h-10 px-2 text-base font-black border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
-              />
-            </div>
+          <div className="mt-1.5 flex items-center gap-1.5" data-testid="mesa-area">
+            <label className="text-[10px] uppercase tracking-widest font-black text-zinc-500 w-10">
+              Mesa
+            </label>
+            <input
+              data-testid="input-mesa"
+              type="text"
+              value={mesaNumber}
+              onChange={(e) => setMesaNumber(e.target.value)}
+              placeholder="Ej. 5"
+              className="w-20 h-10 px-2 text-base font-black border border-zinc-200 rounded-lg outline-none focus:border-[#006400] focus:ring-2 focus:ring-[#006400]/20 text-center"
+            />
             {isValleDorado && (
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] uppercase tracking-widest font-black text-zinc-400 w-14">
-                  Barra
-                </span>
+              <div className="flex items-center gap-1 ml-auto">
                 {VALLE_BARRAS.map((b) => {
                   const active = mesaNumber === b;
                   return (
@@ -644,10 +631,10 @@ function CartPanel({
                       key={b}
                       data-testid={`btn-mesa-${b}`}
                       onClick={() => setMesaNumber(b)}
-                      className={`h-9 px-3 rounded-md text-xs uppercase tracking-widest font-black border-2 tap-scale ${
+                      className={`h-10 px-3 rounded-lg text-xs uppercase tracking-widest font-black tap-scale transition-all ${
                         active
-                          ? "bg-[#006400] text-white border-[#006400]"
-                          : "bg-white text-[#006400] border-[#006400]"
+                          ? "bg-[#006400] text-white shadow-sm"
+                          : "bg-zinc-100 text-zinc-700 active:bg-zinc-200"
                       }`}
                     >
                       {b}
@@ -719,7 +706,7 @@ function CartPanel({
                 setTipManual(e.target.value);
               }}
               placeholder="0"
-              className="flex-1 h-10 px-2 text-base font-black border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+              className="flex-1 h-10 px-3 text-base font-black border border-zinc-200 rounded-lg outline-none focus:border-[#006400] focus:ring-2 focus:ring-[#006400]/20"
               min="0"
             />
           </div>
@@ -734,10 +721,10 @@ function CartPanel({
                     setTipManual("");
                     setTipPercent(active ? null : p);
                   }}
-                  className={`h-9 rounded-md text-xs font-black border-2 tap-scale ${
+                  className={`h-9 rounded-lg text-xs font-black tap-scale transition-all ${
                     active
-                      ? "bg-[#006400] text-white border-[#006400]"
-                      : "bg-white text-[#006400] border-[#006400]"
+                      ? "bg-[#006400] text-white shadow-sm"
+                      : "bg-zinc-100 text-zinc-700 active:bg-zinc-200"
                   }`}
                 >
                   {p}%
@@ -762,13 +749,13 @@ function CartPanel({
               value={cashReceived}
               onChange={(e) => setCashReceived(e.target.value)}
               placeholder={total > 0 ? formatMXN(total) : "0"}
-              className="flex-1 h-10 px-2 text-base font-black border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+              className="flex-1 h-10 px-3 text-base font-black border border-zinc-200 rounded-lg outline-none focus:border-[#006400] focus:ring-2 focus:ring-[#006400]/20"
               min="0"
             />
           </div>
           {change > 0 && (
             <div
-              className="flex items-center justify-between bg-emerald-50 border-2 border-emerald-200 rounded-md px-3 py-1.5"
+              className="flex items-center justify-between bg-emerald-50 rounded-lg px-3 py-2"
               data-testid="change-display"
             >
               <span className="text-[10px] uppercase tracking-widest font-black text-emerald-900">
@@ -897,12 +884,12 @@ function CartPanel({
       )}
 
       {/* Cobrar */}
-      <div className="px-3 pb-3 pt-1">
+      <div className="px-3 pb-3 pt-1.5">
         <button
           data-testid="btn-charge"
           onClick={onCharge}
           disabled={submitting || subtotal <= 0}
-          className="w-full h-14 sm:h-16 rounded-md bg-[#006400] text-white font-display text-xl sm:text-2xl font-black uppercase tracking-wider active:bg-[#228B22] disabled:bg-zinc-300 disabled:text-zinc-500 tap-scale"
+          className="w-full h-14 sm:h-16 rounded-xl bg-[#006400] text-white font-display text-xl sm:text-2xl font-black uppercase tracking-wider active:bg-[#228B22] disabled:bg-zinc-200 disabled:text-zinc-400 tap-scale shadow-md disabled:shadow-none transition-all"
         >
           {submitting ? "Cobrando…" : "Cobrar Orden"}
         </button>

@@ -333,6 +333,17 @@ async def update_product(product_id: str, body: ProductUpdate):
     return Product(**res)
 
 
+@api_router.post("/products/reorder")
+async def reorder_products(body: dict):
+    """Recibe {ids: [id1, id2, ...]} y asigna sort_order según el orden recibido."""
+    ids = body.get("ids", [])
+    if not isinstance(ids, list) or not ids:
+        raise HTTPException(status_code=400, detail="ids requeridos")
+    for idx, pid in enumerate(ids):
+        await db.products.update_one({"id": pid}, {"$set": {"sort_order": idx + 1}})
+    return {"ok": True, "count": len(ids)}
+
+
 @api_router.delete("/products/{product_id}")
 async def delete_product(product_id: str):
     res = await db.products.delete_one({"id": product_id})
