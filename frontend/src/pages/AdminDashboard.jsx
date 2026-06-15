@@ -692,6 +692,7 @@ function ProductsTab({ products, reload }) {
     if (e.name !== undefined && e.name !== p.name) payload.name = e.name;
     if (e.price !== undefined && Number(e.price) !== p.price) payload.price = Number(e.price);
     if (e.category !== undefined && e.category !== p.category) payload.category = e.category;
+    if (e.pricing_mode !== undefined && e.pricing_mode !== (p.pricing_mode || "fixed")) payload.pricing_mode = e.pricing_mode;
     if (Object.keys(payload).length === 0) return toast.info("Sin cambios");
     setSavingId(p.id);
     try {
@@ -712,15 +713,17 @@ function ProductsTab({ products, reload }) {
   };
 
   const create = async () => {
-    if (!creating.name || !creating.price) return toast.error("Completa nombre y precio");
+    if (!creating.name) return toast.error("Nombre requerido");
+    if (creating.pricing_mode === "fixed" && !creating.price) return toast.error("Precio requerido");
     try {
       await api.post("/products", {
         name: creating.name,
-        price: Number(creating.price),
+        price: Number(creating.price) || 0,
         category: creating.category,
+        pricing_mode: creating.pricing_mode,
         sort_order: 999,
       });
-      setCreating({ name: "", price: "", category: "comida" });
+      setCreating({ name: "", price: "", category: "comida", pricing_mode: "fixed" });
       toast.success("Producto creado");
       await reload();
     } catch { toast.error("Error al crear"); }
@@ -745,8 +748,9 @@ function ProductsTab({ products, reload }) {
             type="number"
             value={creating.price}
             onChange={(e) => setCreating((c) => ({ ...c, price: e.target.value }))}
-            placeholder="Precio"
-            className="w-32 h-12 px-3 text-base font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+            placeholder={creating.pricing_mode === "variable" ? "Por peso" : "Precio"}
+            disabled={creating.pricing_mode === "variable"}
+            className="w-32 h-12 px-3 text-base font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400] disabled:bg-zinc-100 disabled:text-zinc-400"
           />
           <select
             data-testid="new-product-category"
@@ -756,6 +760,15 @@ function ProductsTab({ products, reload }) {
           >
             <option value="comida">Comida</option>
             <option value="bebida">Bebida</option>
+          </select>
+          <select
+            data-testid="new-product-pricing-mode"
+            value={creating.pricing_mode}
+            onChange={(e) => setCreating((c) => ({ ...c, pricing_mode: e.target.value }))}
+            className="h-12 px-3 text-base font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400] bg-white"
+          >
+            <option value="fixed">Precio fijo</option>
+            <option value="variable">Por peso/libre</option>
           </select>
           <button
             data-testid="btn-create-product"
@@ -773,6 +786,7 @@ function ProductsTab({ products, reload }) {
           const nameVal = e.name !== undefined ? e.name : p.name;
           const priceVal = e.price !== undefined ? e.price : p.price;
           const catVal = e.category !== undefined ? e.category : (p.category || "comida");
+          const pmVal = e.pricing_mode !== undefined ? e.pricing_mode : (p.pricing_mode || "fixed");
           return (
             <div
               key={p.id}
@@ -787,9 +801,11 @@ function ProductsTab({ products, reload }) {
               />
               <input
                 type="number"
-                value={priceVal}
+                value={pmVal === "variable" ? "" : priceVal}
+                disabled={pmVal === "variable"}
                 onChange={(ev) => setField(p.id, "price", ev.target.value)}
-                className="w-28 h-12 px-3 text-base font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+                className="w-28 h-12 px-3 text-base font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400] disabled:bg-zinc-100 disabled:text-zinc-400"
+                placeholder={pmVal === "variable" ? "Por peso" : "Precio"}
                 data-testid={`edit-price-${p.id}`}
               />
               <select
@@ -800,6 +816,15 @@ function ProductsTab({ products, reload }) {
               >
                 <option value="comida">Comida</option>
                 <option value="bebida">Bebida</option>
+              </select>
+              <select
+                value={pmVal}
+                onChange={(ev) => setField(p.id, "pricing_mode", ev.target.value)}
+                className="h-12 px-3 text-base font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400] bg-white"
+                data-testid={`edit-pricing-mode-${p.id}`}
+              >
+                <option value="fixed">Precio fijo</option>
+                <option value="variable">Por peso/libre</option>
               </select>
               <button
                 onClick={() => save(p)}
@@ -831,12 +856,14 @@ function ProductsTab({ products, reload }) {
 // ----------------------------------------------------------------------------
 function UsersTab({ users, sucursales, reload, showPasswords, setShowPasswords }) {
   const [creating, setCreating] = useState({
-    username: "", password: "", role: "cashier", sucursal: "", caja_name: "Caja 1",
+    username: "", password: "", role: "cashier", sucursal: "", caja_name: "",
   });
   const [drafts, setDrafts] = useState({});
   const [busy, setBusy] = useState(null);
   const defaultSucursal = sucursales[0] || "";
   const effectiveCreatingSucursal = creating.sucursal || defaultSucursal;
+  // Si no se especifica caja_name, usar el username (cobrador)
+  const effectiveCajaName = creating.caja_name.trim() || creating.username.trim() || "";
   const adminCount = users.filter((u) => u.role === "admin").length;
 
   const setField = (id, k, v) => setDrafts((d) => ({ ...d, [id]: { ...(d[id] || {}), [k]: v } }));
@@ -854,12 +881,12 @@ function UsersTab({ users, sucursales, reload, showPasswords, setShowPasswords }
         password: creating.password,
         role: creating.role,
         sucursal: creating.role === "cashier" ? effectiveCreatingSucursal : null,
-        caja_name: creating.caja_name || "Caja 1",
+        caja_name: effectiveCajaName || creating.username.trim(),
       });
       toast.success(`Usuario "${creating.username}" creado`);
       setCreating({
         username: "", password: "", role: "cashier",
-        sucursal: "", caja_name: "Caja 1",
+        sucursal: "", caja_name: "",
       });
       await reload();
     } catch (e) {
@@ -960,7 +987,7 @@ function UsersTab({ users, sucursales, reload, showPasswords, setShowPasswords }
             data-testid="new-user-caja"
             value={creating.caja_name}
             onChange={(e) => setCreating((c) => ({ ...c, caja_name: e.target.value }))}
-            placeholder="Caja 1"
+            placeholder={creating.username ? `Cobrador (${creating.username})` : "Cobrador"}
             className="h-12 px-3 text-base font-bold border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
           />
           <button

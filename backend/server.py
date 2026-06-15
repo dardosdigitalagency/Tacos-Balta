@@ -58,6 +58,7 @@ class Product(BaseModel):
     sort_order: int = 0
     active: bool = True
     category: str = "comida"   # "comida" | "bebida"
+    pricing_mode: str = "fixed"  # "fixed" | "variable" (precio se ingresa al cobrar)
 
 
 class ProductUpdate(BaseModel):
@@ -66,13 +67,15 @@ class ProductUpdate(BaseModel):
     sort_order: Optional[int] = None
     active: Optional[bool] = None
     category: Optional[str] = None
+    pricing_mode: Optional[str] = None
 
 
 class ProductCreate(BaseModel):
     name: str
-    price: float
+    price: float = 0
     sort_order: int = 999
     category: str = "comida"
+    pricing_mode: str = "fixed"
 
 
 class CartItem(BaseModel):
@@ -82,9 +85,18 @@ class CartItem(BaseModel):
     quantity: int
 
 
+class Payment(BaseModel):
+    """Una porción del pago. Una venta puede tener varias (pago dividido)."""
+    method: Literal['efectivo', 'transferencia', 'tarjeta']
+    amount: float           # monto sobre el subtotal de items
+    tip: float = 0.0
+    cash_received: Optional[float] = None
+    change_given: Optional[float] = None
+
+
 class SaleCreate(BaseModel):
     items: List[CartItem]
-    payment_method: Literal['efectivo', 'transferencia', 'tarjeta']
+    payment_method: Literal['efectivo', 'transferencia', 'tarjeta', 'mixto']
     tip: float = 0.0
     sucursal: str
     cashier: Optional[str] = None
@@ -92,6 +104,7 @@ class SaleCreate(BaseModel):
     order_type: Literal['mesa', 'llevar', 'domicilio']
     mesa_number: Optional[str] = None
     cash_received: Optional[float] = None
+    payments: Optional[List[Payment]] = None   # cuando es split
 
 
 class Sale(BaseModel):
@@ -102,6 +115,7 @@ class Sale(BaseModel):
     tip: float = 0.0
     total: float
     payment_method: str
+    payments: Optional[List[Payment]] = None
     sucursal: str
     cashier: Optional[str] = None
     caja: Optional[str] = None
@@ -340,25 +354,65 @@ async def create_sale(body: SaleCreate):
     if body.order_type == "mesa" and not (body.mesa_number and str(body.mesa_number).strip()):
         raise HTTPException(status_code=400, detail="Número de mesa requerido")
 
-    subtotal = sum(i.price * i.quantity for i in body.items)
-    tip = body.tip if body.payment_method in ("tarjeta", "transferencia") else 0.0
-    total = subtotal + tip
+    subtotal = round(sum(i.price * i.quantity for i in body.items), 2)
 
-    # Cálculo de cambio para efectivo
-    change_given = None
-    cash_received = None
-    if body.payment_method == "efectivo" and body.cash_received is not None:
-        cash_received = float(body.cash_received)
-        if cash_received < total:
-            raise HTTPException(status_code=400, detail="Dinero recibido menor al total")
-        change_given = round(cash_received - total, 2)
+    # Pago dividido (mixto) vs pago único
+    if body.payment_method == "mixto":
+        if not body.payments or len(body.payments) < 2:
+            raise HTTPException(status_code=400, detail="Pago mixto requiere al menos 2 partes")
+        sum_amount = round(sum(p.amount for p in body.payments), 2)
+        if abs(sum_amount - subtotal) > 0.01:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Las partes del pago ({sum_amount}) deben sumar el subtotal ({subtotal})",
+            )
+        # Solo se acepta propina en partes tarjeta/transferencia
+        tip = round(sum(p.tip for p in body.payments if p.method in ("tarjeta", "transferencia")), 2)
+        # change/cash_received se calcula por cada parte de efectivo si viene
+        processed_payments = []
+        cash_total_received = 0.0
+        change_total = 0.0
+        for p in body.payments:
+            cr = None
+            cg = None
+            if p.method == "efectivo" and p.cash_received is not None:
+                cr = float(p.cash_received)
+                if cr < p.amount:
+                    raise HTTPException(status_code=400, detail="Dinero recibido menor al monto en efectivo")
+                cg = round(cr - p.amount, 2)
+                cash_total_received += cr
+                change_total += cg
+            t = p.tip if p.method in ("tarjeta", "transferencia") else 0.0
+            processed_payments.append(Payment(
+                method=p.method, amount=round(p.amount, 2),
+                tip=round(t, 2), cash_received=cr, change_given=cg,
+            ))
+        total = round(subtotal + tip, 2)
+        cash_received = cash_total_received if cash_total_received > 0 else None
+        change_given = change_total if change_total > 0 else None
+    else:
+        # Pago único
+        tip = body.tip if body.payment_method in ("tarjeta", "transferencia") else 0.0
+        total = round(subtotal + tip, 2)
+        cash_received = None
+        change_given = None
+        if body.payment_method == "efectivo" and body.cash_received is not None:
+            cash_received = float(body.cash_received)
+            if cash_received < total:
+                raise HTTPException(status_code=400, detail="Dinero recibido menor al total")
+            change_given = round(cash_received - total, 2)
+        processed_payments = [Payment(
+            method=body.payment_method, amount=subtotal,
+            tip=round(tip, 2), cash_received=cash_received, change_given=change_given,
+        )]
 
     sale = Sale(
         items=body.items,
-        subtotal=round(subtotal, 2),
+        subtotal=subtotal,
         tip=round(tip, 2),
-        total=round(total, 2),
+        total=total,
         payment_method=body.payment_method,
+        payments=processed_payments,
         sucursal=body.sucursal,
         cashier=body.cashier,
         caja=body.caja,
@@ -370,6 +424,7 @@ async def create_sale(body: SaleCreate):
     )
     doc = sale.model_dump()
     doc["items"] = [i.model_dump() for i in sale.items]
+    doc["payments"] = [p.model_dump() for p in (sale.payments or [])]
     await db.sales.insert_one(doc)
     return sale
 
@@ -452,13 +507,29 @@ async def dashboard(
         tot = float(s.get("total", sub + tip))
         ot = s.get("order_type", "mesa")
         ck = s.get("caja") or "—"
+        payments = s.get("payments") or []
 
-        if pm in totals:
-            totals[pm]["count"] += 1
-            totals[pm]["amount"] += sub
-            totals[pm]["tip"] += tip
-        if pm in tip_breakdown:
-            tip_breakdown[pm] += tip
+        # Si la venta tiene desglose de pagos (mixto o single), úsalo
+        if payments:
+            for p in payments:
+                m = p.get("method")
+                pa = float(p.get("amount", 0))
+                pt = float(p.get("tip", 0))
+                if m in totals:
+                    totals[m]["count"] += 1
+                    totals[m]["amount"] += pa
+                    totals[m]["tip"] += pt
+                if m in tip_breakdown:
+                    tip_breakdown[m] += pt
+        else:
+            # Legacy: usa payment_method único
+            if pm in totals:
+                totals[pm]["count"] += 1
+                totals[pm]["amount"] += sub
+                totals[pm]["tip"] += tip
+            if pm in tip_breakdown:
+                tip_breakdown[pm] += tip
+
         if ot in by_order_type:
             by_order_type[ot]["count"] += 1
             by_order_type[ot]["total"] += tot
@@ -620,6 +691,26 @@ async def dashboard_period(
             totals[pm]["count"] += 1
             totals[pm]["amount"] += sub
             totals[pm]["tip"] += tip
+        # Si hay split, sobreescribimos con desglose preciso
+        payments = s.get("payments") or []
+        if payments:
+            # restar lo del payment_method "mixto" no aplica; aquí re-acumulamos correctamente
+            if pm == "mixto":
+                # quitar la cuenta global ya sumada en pm in totals (no estaba), nada que revertir
+                pass
+            else:
+                # restar el conteo legacy (lo agregamos arriba)
+                totals[pm]["count"] -= 1
+                totals[pm]["amount"] -= sub
+                totals[pm]["tip"] -= tip
+            for p in payments:
+                m = p.get("method")
+                pa = float(p.get("amount", 0))
+                pt = float(p.get("tip", 0))
+                if m in totals:
+                    totals[m]["count"] += 1
+                    totals[m]["amount"] += pa
+                    totals[m]["tip"] += pt
         if ot in by_order_type:
             by_order_type[ot]["count"] += 1
             by_order_type[ot]["total"] += tot
@@ -770,16 +861,30 @@ async def report_csv(
         tot = float(s.get("total", sub + tip))
         pm = s.get("payment_method", "efectivo")
         ot = s.get("order_type", "mesa")
+        payments = s.get("payments") or []
         b["count"] += 1
         b["total"] += tot
         b["subtotal"] += sub
         b["tip"] += tip
-        if pm in ("efectivo", "transferencia", "tarjeta"):
-            b[pm] += sub
-        if pm == "tarjeta":
-            b["tip_tarjeta"] += tip
-        if pm == "transferencia":
-            b["tip_transferencia"] += tip
+        # Desglose por método de pago: si hay split, usa esos amounts
+        if payments:
+            for p in payments:
+                m = p.get("method", "efectivo")
+                pa = float(p.get("amount", 0))
+                pt = float(p.get("tip", 0))
+                if m in ("efectivo", "transferencia", "tarjeta"):
+                    b[m] += pa
+                if m == "tarjeta":
+                    b["tip_tarjeta"] += pt
+                if m == "transferencia":
+                    b["tip_transferencia"] += pt
+        else:
+            if pm in ("efectivo", "transferencia", "tarjeta"):
+                b[pm] += sub
+            if pm == "tarjeta":
+                b["tip_tarjeta"] += tip
+            if pm == "transferencia":
+                b["tip_transferencia"] += tip
         if ot in ("mesa", "llevar", "domicilio"):
             b[ot] += tot
             b[f"{ot}_n"] += 1

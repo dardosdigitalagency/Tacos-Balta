@@ -1,0 +1,35 @@
+{
+  "summary": "Iteration 5 full test (backend pytest + frontend Playwright). 19/19 backend tests PASS: pricing_mode 'fixed'/'variable' on Product (create/update/Birria seeded as variable); single-payment writes payments[1]; mixto subtotal=120/tip=15/total=135 with payments[2]; mixto sum mismatch->400, only 1 part->400, cash_received<amount->400, cash_received>amount->change_given computed; Dashboard today + period?week reflect efectivo+60/tarjeta+60/tip+15; CSV report places mixto $60 in Efectivo column, $60 in Tarjeta column, $15 in Propina tarjeta. All 6 logins OK (admin, valle_dorado, mezcalitos, san_vicente, pi, san_jose) – usernames preserved (no rename). Frontend POS (390x844): bug fix verified – 5 rapid JS clicks on Tacos -> qty=5 / cart-total=$150 (functional setState eliminated stale closure); variable Birria $80 -> cart-total $230; B2 button fills input-mesa='B2' (type=text); split modal: cash=$50/subtotal=$150 -> digital auto $100, +tip $20 -> total $170; btn-charge submits and toast 'Venta cobrada $170' shown, cart resets; mezcalitos: B1/B2/B3 hidden. Admin (1280x900): tab-products has new-product-pricing-mode select; variable disables new-product-price, fixed re-enables; edit-pricing-mode-{birria_id}=variable with edit-price-{birria_id} disabled; tab-users: new-user-caja placeholder becomes 'Cobrador (juan_perez)' when typing username.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "POS split-area", "issues": ["split-digital-amount renders as a <div> (text 'Monto$100') not an <input>. Functionally OK (read-only), but using input_value() in tests fails. Consider an input[readOnly] for consistency with other amount fields."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration5.py",
+    "/app/test_reports/pytest/iteration5_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py POS endpoints still have NO auth gating (carries over from iter-3 review). /api/products, /api/sales, /api/users POST/PUT/DELETE are publicly callable.",
+    "AdminDashboard.jsx is now ~1392 lines, even bigger than iter-3. Refactor strongly recommended (UsersTab, ProductsTab, etc are inline).",
+    "Dashboard /period 'mixto' handling (line 690-713): the legacy fallback subtracts pm-based totals only when pm != 'mixto'. For mixto sales, payment_method 'mixto' is never in `totals` so the unconditional 'pm in totals' block (line 690) is a noop – the logic is correct but the comment+structure are confusing; consider extracting a small helper to dedupe with /dashboard.",
+    "/api/sales POST does not enforce that the cashier's sucursal == body.sucursal — a misconfigured client could record a sale against the wrong sucursal.",
+    "Frontend split-digital-amount is a non-input element; tests must use text_content. Either change to input[readOnly] or document.",
+    "Passwords still stored plaintext (carry-over).",
+    "@app.on_event('startup') still deprecated (carry-over)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration5.py"
+  ],
+  "success_rate": {"backend": "100% (19/19 pytest)", "frontend": "100% of tested flows"},
+  "test_credentials": "admin/taco123, valle_dorado/valle123, mezcalitos/mezca123, san_vicente/vicente123, pi/pi123, san_jose/jose123 – all preserved, no renames.",
+  "seed_data_creation": "Backend tests created and cleaned up TEST_VariableX product. Backend tests created (and left) 4 today sales on Valle Dorado/Caja 1: tarjeta single (subtotal 60, tip 10), mixto efectivo 60 + tarjeta 60 tip 15, mixto efectivo 50 (cash 100) + tarjeta 40 tip 5. Frontend created an extra mixto valle_dorado sale (cash $50 + tarjeta $100 tip $20 = $170 total, mesa B2). These are required by the dashboard/CSV assertions for split; they remain in DB.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "test_iteration5.py is the up-to-date pytest suite (covers pricing_mode, mixto validation/edge cases, dashboard+CSV reflecting split). Older suites test_iteration4.py (sucursales CRUD, period/CSV shape) and backend_test.py (iter-3 schema) also still pass and can be combined: pytest backend/tests/ -v. Frontend testids: admin tabs use keys [dashboard, periodo, sales, products, sucursales, users] -> tab-products / tab-users (NOT tab-precios / tab-usuarios). POS login uses input-username / input-password (NOT login-username). Birria product id is 8df696ef-37d8-4a2b-81f9-d12ab3beb198 (pricing_mode=variable). Tacos id 42ac74e9-d5f7-4353-a7e5-216180ff0ef4. The bug fix verification uses page.evaluate to fire 5 synchronous clicks (no awaits) on btn-inc – the functional setState in POS.jsx inc/dec works.",
+  "rca_of_the_issue": "N/A. The stale-closure bug (5 rapid +/- clicks summing to 4) reported by the user is reproduced as fixed: page.evaluate-driven 5 synchronous clicks now produce qty=5 / $150 because inc/dec use `setCart((c) => ({...c, [pid]: (Number(c[pid])||0)+1}))` (POS.jsx lines 120-122), preserving each click via functional state."
+}
