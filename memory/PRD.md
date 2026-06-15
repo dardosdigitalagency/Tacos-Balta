@@ -41,6 +41,14 @@ Sistema POS mobile-first para taquería con:
 - **Estadísticas mejoradas**: KPIs ticket promedio, items por venta, hora pico, total de items. Sección "Por tipo de orden". Filtro y gráfica por caja dentro de cada sucursal.
 - **Badge "Made with Emergent" eliminado** (vía JS + MutationObserver)
 
+## Iteración 5 (Feb 2026) — Production hardening
+- **Bug crítico de suma corregido**: inc/dec en POS usaban `cart[pid]` desde closure (stale state). Cuando se tocaban + o - rápido, varios clicks leían el mismo valor y se perdían increments (ej. 5 toques sumaban 4). Arreglado con functional setState `setCart(c => ...)`. Verificado en tests: 5 clicks consecutivos = $150 correcto.
+- **Productos por peso / precio variable** (`pricing_mode: 'fixed' | 'variable'`): el cobrador ingresa el monto al cobrar. Birria sembrada por defecto. Admin puede crear/editar el modo desde la pestaña Precios.
+- **Pago dividido** (efectivo + tarjeta / efectivo + transferencia): toggle naranja en el panel del carrito. Auto-balance del monto digital. Propina aplica sólo a la parte digital. Backend guarda `payments[]` array y el dashboard/CSV desglosan correctamente cada método.
+- **Botones B1/B2/B3** (barras) en el campo mesa, **sólo para Valle Dorado**. Input mesa ahora acepta texto, no sólo números.
+- **Cobradores rotativos**: ya estaba implementado en datos — cada venta guarda su propia `sucursal` y `cashier` al momento de la venta. Mover a un cobrador de sucursal NO cambia su histórico.
+- **Default caja_name = username**: al crear un usuario sin caja_name, se asigna automáticamente el username (ya no aparece "Caja 1" por defecto).
+
 ## Backlog / Próximas mejoras
 - P1: Reportes históricos (semana / mes), exportar CSV de ventas
 - P1: Cierre de caja y arqueo
