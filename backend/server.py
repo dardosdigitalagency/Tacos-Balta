@@ -104,7 +104,10 @@ class SaleCreate(BaseModel):
     order_type: Literal['mesa', 'llevar', 'domicilio']
     mesa_number: Optional[str] = None
     cash_received: Optional[float] = None
-    payments: Optional[List[Payment]] = None   # cuando es split
+    payments: Optional[List[Payment]] = None
+    iva: float = 0.0
+    invoice_requested: bool = False
+    delivery_fee: float = 0.0
 
 
 class Sale(BaseModel):
@@ -113,6 +116,9 @@ class Sale(BaseModel):
     items: List[CartItem]
     subtotal: float
     tip: float = 0.0
+    iva: float = 0.0
+    invoice_requested: bool = False
+    delivery_fee: float = 0.0
     total: float
     payment_method: str
     payments: Optional[List[Payment]] = None
@@ -181,9 +187,26 @@ def today_mx_range_utc():
     return date_range_utc(None)
 
 
-def period_range_utc(period: str, date_str: Optional[str] = None):
-    """Devuelve (start_utc_iso, end_utc_iso, start_mx_date, end_mx_date_inclusive)
-    para una semana o mes que CONTIENE la fecha indicada (o hoy si None)."""
+def period_range_utc(period: str, date_str: Optional[str] = None,
+                     start_date: Optional[str] = None, end_date: Optional[str] = None):
+    """Devuelve (start_utc_iso, end_utc_iso, start_mx_date, end_mx_date_inclusive)."""
+    if period == "custom":
+        if not start_date or not end_date:
+            raise HTTPException(status_code=400, detail="start_date y end_date requeridos para custom")
+        try:
+            start_mx = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=MX_TZ)
+            end_base = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=MX_TZ)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Fechas inválidas (YYYY-MM-DD)")
+        if end_base < start_mx:
+            raise HTTPException(status_code=400, detail="end_date debe ser >= start_date")
+        end_mx = end_base + timedelta(days=1)
+        return (
+            start_mx.astimezone(timezone.utc).isoformat(),
+            end_mx.astimezone(timezone.utc).isoformat(),
+            start_mx, end_base,
+        )
+
     if date_str:
         try:
             base = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=MX_TZ)
@@ -194,7 +217,6 @@ def period_range_utc(period: str, date_str: Optional[str] = None):
         base = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
 
     if period == "week":
-        # Semana lunes->domingo
         start_mx = base - timedelta(days=base.weekday())
         end_mx = start_mx + timedelta(days=7)
     elif period == "month":
@@ -202,13 +224,13 @@ def period_range_utc(period: str, date_str: Optional[str] = None):
         last_day = calendar.monthrange(base.year, base.month)[1]
         end_mx = start_mx.replace(day=last_day) + timedelta(days=1)
     else:
-        raise HTTPException(status_code=400, detail="Periodo inválido (week|month)")
+        raise HTTPException(status_code=400, detail="Periodo inválido (week|month|custom)")
 
     return (
         start_mx.astimezone(timezone.utc).isoformat(),
         end_mx.astimezone(timezone.utc).isoformat(),
         start_mx,
-        end_mx - timedelta(days=1),  # último día inclusivo
+        end_mx - timedelta(days=1),
     )
 
 
@@ -366,20 +388,22 @@ async def create_sale(body: SaleCreate):
         raise HTTPException(status_code=400, detail="Número de mesa requerido")
 
     subtotal = round(sum(i.price * i.quantity for i in body.items), 2)
+    iva = round(float(body.iva or 0), 2) if body.invoice_requested else 0.0
+    delivery_fee = round(float(body.delivery_fee or 0), 2) if body.order_type == "domicilio" else 0.0
 
     # Pago dividido (mixto) vs pago único
     if body.payment_method == "mixto":
         if not body.payments or len(body.payments) < 2:
             raise HTTPException(status_code=400, detail="Pago mixto requiere al menos 2 partes")
-        sum_amount = round(sum(p.amount for p in body.payments), 2)
-        if abs(sum_amount - subtotal) > 0.01:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Las partes del pago ({sum_amount}) deben sumar el subtotal ({subtotal})",
-            )
         # Solo se acepta propina en partes tarjeta/transferencia
         tip = round(sum(p.tip for p in body.payments if p.method in ("tarjeta", "transferencia")), 2)
-        # change/cash_received se calcula por cada parte de efectivo si viene
+        total = round(subtotal + tip + iva + delivery_fee, 2)
+        sum_amount = round(sum(p.amount for p in body.payments), 2)
+        if abs(sum_amount - total) > 0.02:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Las partes ({sum_amount}) deben sumar el total ({total})",
+            )
         processed_payments = []
         cash_total_received = 0.0
         change_total = 0.0
@@ -398,13 +422,14 @@ async def create_sale(body: SaleCreate):
                 method=p.method, amount=round(p.amount, 2),
                 tip=round(t, 2), cash_received=cr, change_given=cg,
             ))
-        total = round(subtotal + tip, 2)
         cash_received = cash_total_received if cash_total_received > 0 else None
         change_given = change_total if change_total > 0 else None
     else:
-        # Pago único
         tip = body.tip if body.payment_method in ("tarjeta", "transferencia") else 0.0
-        total = round(subtotal + tip, 2)
+        # IVA solo si tarjeta involucrada y factura solicitada
+        if body.payment_method != "tarjeta":
+            iva = 0.0
+        total = round(subtotal + tip + iva + delivery_fee, 2)
         cash_received = None
         change_given = None
         if body.payment_method == "efectivo" and body.cash_received is not None:
@@ -413,7 +438,7 @@ async def create_sale(body: SaleCreate):
                 raise HTTPException(status_code=400, detail="Dinero recibido menor al total")
             change_given = round(cash_received - total, 2)
         processed_payments = [Payment(
-            method=body.payment_method, amount=subtotal,
+            method=body.payment_method, amount=total,
             tip=round(tip, 2), cash_received=cash_received, change_given=change_given,
         )]
 
@@ -421,6 +446,9 @@ async def create_sale(body: SaleCreate):
         items=body.items,
         subtotal=subtotal,
         tip=round(tip, 2),
+        iva=iva,
+        invoice_requested=bool(body.invoice_requested and iva > 0),
+        delivery_fee=delivery_fee,
         total=total,
         payment_method=body.payment_method,
         payments=processed_payments,
@@ -625,8 +653,9 @@ async def dashboard(
 DAY_NAMES_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 
 
-async def _aggregate_period(period: str, date: Optional[str], sucursal: Optional[str], caja: Optional[str]):
-    start_iso, end_iso, start_mx, end_mx = period_range_utc(period, date)
+async def _aggregate_period(period: str, date: Optional[str], sucursal: Optional[str], caja: Optional[str],
+                            start_date: Optional[str] = None, end_date: Optional[str] = None):
+    start_iso, end_iso, start_mx, end_mx = period_range_utc(period, date, start_date, end_date)
     q: dict = {"created_at": {"$gte": start_iso, "$lt": end_iso}}
     if sucursal and sucursal != "all":
         q["sucursal"] = sucursal
@@ -638,13 +667,15 @@ async def _aggregate_period(period: str, date: Optional[str], sucursal: Optional
 
 @api_router.get("/dashboard/period")
 async def dashboard_period(
-    period: Literal['week', 'month'] = 'week',
+    period: Literal['week', 'month', 'custom'] = 'week',
     date: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     sucursal: Optional[str] = None,
     caja: Optional[str] = None,
 ):
-    """Stats agregadas en una semana o mes."""
-    sales, start_mx, end_mx = await _aggregate_period(period, date, sucursal, caja)
+    """Stats agregadas en una semana, mes o rango personalizado."""
+    sales, start_mx, end_mx = await _aggregate_period(period, date, sucursal, caja, start_date, end_date)
 
     # Estructuras de agregación
     by_day: dict = {}              # YYYY-MM-DD -> {count, total}
@@ -837,13 +868,15 @@ async def dashboard_period(
 # ----------------------------------------------------------------------------
 @api_router.get("/reports/csv")
 async def report_csv(
-    period: Literal['week', 'month'] = 'week',
+    period: Literal['week', 'month', 'custom'] = 'week',
     date: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     sucursal: Optional[str] = None,
     caja: Optional[str] = None,
 ):
     """CSV con KPIs por día y por sucursal en el periodo indicado."""
-    start_iso, end_iso, start_mx, end_mx = period_range_utc(period, date)
+    start_iso, end_iso, start_mx, end_mx = period_range_utc(period, date, start_date, end_date)
     q: dict = {"created_at": {"$gte": start_iso, "$lt": end_iso}}
     if sucursal and sucursal != "all":
         q["sucursal"] = sucursal

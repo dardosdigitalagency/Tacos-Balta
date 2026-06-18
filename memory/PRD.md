@@ -49,9 +49,15 @@ Sistema POS mobile-first para taquería con:
 - **Cobradores rotativos**: ya estaba implementado en datos — cada venta guarda su propia `sucursal` y `cashier` al momento de la venta. Mover a un cobrador de sucursal NO cambia su histórico.
 - **Default caja_name = username**: al crear un usuario sin caja_name, se asigna automáticamente el username (ya no aparece "Caja 1" por defecto).
 
+## Iteración 6 (Feb 2026) — Factura, Envío, Split Tarjeta+Transf., Rango Personalizado
+- **Toggle "Factura (+16% IVA)"**: aparece sólo cuando el pago involucra Tarjeta (single o split). Se suma `subtotal × 0.16` al total y se guarda `invoice_requested` + `iva` en la venta.
+- **Input "Envío"**: visible sólo cuando el tipo de orden es Domicilio. Se suma directo al total y se guarda en `delivery_fee`.
+- **3ª opción de pago dividido — Tarjeta + Transferencia**: ahora hay 3 splits posibles (efectivo+tarjeta, efectivo+transferencia, tarjeta+transferencia). Backend valida que `sum(payment.amount) == total` (incluye tip+iva+envío).
+- **Custom Date Range en Admin → Período**: botón "Personalizado" en el toggle. Aparecen 2 date pickers (Desde/Hasta) y pasa `period=custom&start_date&end_date` al endpoint. CSV también soporta rango personalizado.
+
 ## Backlog / Próximas mejoras
-- P1: Reportes históricos (semana / mes), exportar CSV de ventas
 - P1: Cierre de caja y arqueo
 - P2: Múltiples cajeros con sesión por usuario, historial por persona
 - P2: Cancelación / devolución de ventas
 - P2: Notas por venta, comentarios al cocinero, ticket imprimible
+- P2: Refactor de `POS.jsx` y `AdminDashboard.jsx` (>1000 líneas c/u) en componentes más chicos

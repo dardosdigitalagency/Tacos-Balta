@@ -1,10 +1,10 @@
 /**
- * POS – Punto de Venta v4
- * Cambios v4:
- *  - inc/dec con functional setState (bug de suma corregido).
- *  - Productos VARIABLES (peso/precio libre, ej. Birria): se ingresa el monto.
- *  - Pago dividido (efectivo + tarjeta / efectivo + transferencia).
- *  - Botones rápidos B1/B2/B3 para mesa (sólo Valle Dorado).
+ * POS – Punto de Venta v5
+ * Cambios v5:
+ *  - Toggle "Factura (+16% IVA)" cuando el pago involucra tarjeta.
+ *  - Input "Envío" cuando el tipo de orden es Domicilio (suma al total).
+ *  - 3 opciones de pago dividido: Efectivo+Tarjeta, Efectivo+Transf., Tarjeta+Transf.
+ *  - Pago dividido envía amounts cuya suma == total (subtotal+tip+iva+envío).
  */
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -21,6 +21,12 @@ const ORDER_TYPES = [
 const TIP_PERCENTS = [5, 10, 15, 20];
 const VALLE_BARRAS = ["B1", "B2", "B3"];
 
+const SPLIT_TYPES = [
+  { value: "cash-card", methods: ["efectivo", "tarjeta"], label: "Efectivo + Tarjeta" },
+  { value: "cash-transfer", methods: ["efectivo", "transferencia"], label: "Efectivo + Transferencia" },
+  { value: "card-transfer", methods: ["tarjeta", "transferencia"], label: "Tarjeta + Transferencia" },
+];
+
 export default function POS() {
   const navigate = useNavigate();
   const session = getSession();
@@ -31,9 +37,7 @@ export default function POS() {
   const caja = session?.user?.caja_name || cashier || "Caja 1";
 
   const [products, setProducts] = useState([]);
-  // Cart fixed: { product_id: qty }
   const [cart, setCart] = useState({});
-  // Cart variable: array de líneas independientes
   const [varItems, setVarItems] = useState([]);
   const [payment, setPayment] = useState("efectivo");
   const [tipPercent, setTipPercent] = useState(null);
@@ -44,11 +48,15 @@ export default function POS() {
   const [submitting, setSubmitting] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
 
+  // Nuevos: factura y envío
+  const [requiresInvoice, setRequiresInvoice] = useState(false);
+  const [deliveryFee, setDeliveryFee] = useState("");
+
   // Split payment state
   const [splitMode, setSplitMode] = useState(false);
-  const [splitDigital, setSplitDigital] = useState("tarjeta"); // segundo método
-  const [splitCashAmount, setSplitCashAmount] = useState("");
-  const [splitDigitalTip, setSplitDigitalTip] = useState("");
+  const [splitType, setSplitType] = useState("cash-card");
+  const [splitAmountA, setSplitAmountA] = useState("");
+  const [splitTip, setSplitTip] = useState("");
   const [splitCashReceived, setSplitCashReceived] = useState("");
 
   useEffect(() => {
@@ -58,7 +66,6 @@ export default function POS() {
         .then((r) => setProducts(r.data))
         .catch(() => toast.error("No se pudieron cargar los productos"));
     loadProducts();
-    // refrescar productos cada 30s para tomar cambios de precios desde admin
     const t = setInterval(loadProducts, 30000);
     return () => clearInterval(t);
   }, []);
@@ -88,15 +95,20 @@ export default function POS() {
 
   const subtotal = lineItems.reduce((s, i) => s + i.subtotal, 0);
 
-  // --- Pago dividido ---
-  const splitCashNum = Number(splitCashAmount) || 0;
-  const splitDigitalAmount = Math.max(0, subtotal - splitCashNum);
-  const splitTipNum = Number(splitDigitalTip) || 0;
-  const splitCashReceivedNum = Number(splitCashReceived) || 0;
-  const splitCashChange =
-    splitCashReceivedNum >= splitCashNum && splitCashNum > 0
-      ? splitCashReceivedNum - splitCashNum
-      : 0;
+  // Métodos del split actual
+  const splitMethods = useMemo(
+    () => SPLIT_TYPES.find((s) => s.value === splitType)?.methods || ["efectivo", "tarjeta"],
+    [splitType]
+  );
+  const splitHasCash = splitMethods.includes("efectivo");
+  const splitHasCard = splitMethods.includes("tarjeta");
+
+  // ¿Pago involucra tarjeta? (controla visibilidad de la opción Factura)
+  const cardInvolved = splitMode ? splitHasCard : payment === "tarjeta";
+
+  // Envío
+  const deliveryNum =
+    orderType === "domicilio" ? Math.max(0, Number(deliveryFee) || 0) : 0;
 
   // --- Pago único ---
   const showTipSingle = !splitMode && (payment === "tarjeta" || payment === "transferencia");
@@ -106,8 +118,24 @@ export default function POS() {
     return Number(tipManual || 0);
   }, [showTipSingle, tipPercent, tipManual, subtotal]);
 
+  // --- Pago dividido ---
+  const splitAmountANum = Number(splitAmountA) || 0;
+  const splitTipNum = Number(splitTip) || 0;
+  const splitCashReceivedNum = Number(splitCashReceived) || 0;
+
   const effectiveTip = splitMode ? splitTipNum : singleTip;
-  const total = subtotal + effectiveTip;
+  // IVA aplica solo si tarjeta involucrada y se solicitó factura
+  const iva = requiresInvoice && cardInvolved ? Math.round(subtotal * 0.16 * 100) / 100 : 0;
+  const total = subtotal + effectiveTip + iva + deliveryNum;
+
+  // En split: amount A = entrada, amount B = total - A
+  const splitAmountB = Math.max(0, total - splitAmountANum);
+  const splitCashAmount = splitHasCash ? splitAmountANum : 0;
+  const splitCashChange =
+    splitHasCash && splitCashReceivedNum >= splitCashAmount && splitCashAmount > 0
+      ? splitCashReceivedNum - splitCashAmount
+      : 0;
+
   const itemsCount = lineItems.reduce((s, i) => s + i.quantity, 0);
 
   const isCashSingle = !splitMode && payment === "efectivo";
@@ -115,7 +143,7 @@ export default function POS() {
   const change =
     isCashSingle && cashNum >= total && total > 0 ? cashNum - total : 0;
 
-  // ---- Acciones de carrito (FUNCTIONAL setState - corrige bug de suma) ----
+  // ---- Acciones de carrito ----
   const inc = (pid) =>
     setCart((c) => ({ ...c, [pid]: (Number(c[pid]) || 0) + 1 }));
   const dec = (pid) =>
@@ -159,10 +187,12 @@ export default function POS() {
     setMesaNumber("");
     setCashReceived("");
     setShowDetail(false);
+    setRequiresInvoice(false);
+    setDeliveryFee("");
     setSplitMode(false);
-    setSplitDigital("tarjeta");
-    setSplitCashAmount("");
-    setSplitDigitalTip("");
+    setSplitType("cash-card");
+    setSplitAmountA("");
+    setSplitTip("");
     setSplitCashReceived("");
   };
 
@@ -174,7 +204,6 @@ export default function POS() {
       return toast.error("Ingresa el número/mesa");
     }
 
-    // Construir payload según modo
     let payload = {
       items: lineItems.map(({ product_id, name, price, quantity }) => ({
         product_id,
@@ -187,36 +216,43 @@ export default function POS() {
       caja,
       order_type: orderType,
       mesa_number: orderType === "mesa" ? mesaNumber.trim() : null,
+      delivery_fee: deliveryNum,
+      invoice_requested: requiresInvoice && cardInvolved,
+      iva: requiresInvoice && cardInvolved ? iva : 0,
     };
 
     if (splitMode) {
-      if (splitCashNum <= 0 || splitDigitalAmount <= 0) {
+      if (splitAmountANum <= 0 || splitAmountB <= 0) {
         return toast.error("Ambas partes deben ser mayores a 0");
       }
-      if (Math.abs(splitCashNum + splitDigitalAmount - subtotal) > 0.01) {
-        return toast.error("Las partes deben sumar el subtotal");
+      if (Math.abs(splitAmountANum + splitAmountB - total) > 0.02) {
+        return toast.error("Las partes deben sumar el total");
       }
-      if (
-        splitCashReceived !== "" &&
-        splitCashReceivedNum < splitCashNum
-      ) {
-        return toast.error("Dinero recibido en efectivo es menor a su parte");
+      if (splitHasCash) {
+        if (splitCashReceived !== "" && splitCashReceivedNum < splitCashAmount) {
+          return toast.error("Dinero recibido en efectivo es menor a su parte");
+        }
       }
+      const [methodA, methodB] = splitMethods;
+      const tipOnA = methodA === "efectivo" ? 0 : splitTipNum;
+      const tipOnB = methodA === "efectivo" ? splitTipNum : 0;
+      // Si ambos digitales (card-transfer), asignamos tip al primero (tarjeta)
       payload = {
         ...payload,
         payment_method: "mixto",
         payments: [
           {
-            method: "efectivo",
-            amount: splitCashNum,
-            tip: 0,
-            cash_received:
-              splitCashReceived !== "" ? splitCashReceivedNum : null,
+            method: methodA,
+            amount: splitAmountANum,
+            tip: tipOnA,
+            ...(methodA === "efectivo" && splitCashReceived !== ""
+              ? { cash_received: splitCashReceivedNum }
+              : {}),
           },
           {
-            method: splitDigital,
-            amount: splitDigitalAmount,
-            tip: splitTipNum,
+            method: methodB,
+            amount: splitAmountB,
+            tip: tipOnB,
           },
         ],
       };
@@ -311,6 +347,8 @@ export default function POS() {
         items={lineItems}
         subtotal={subtotal}
         tip={effectiveTip}
+        iva={iva}
+        deliveryNum={deliveryNum}
         total={total}
         onRemoveVar={removeVarItem}
         payment={payment}
@@ -319,8 +357,10 @@ export default function POS() {
           if (p === "efectivo") {
             setTipPercent(null);
             setTipManual("");
+            setRequiresInvoice(false);
           } else {
             setCashReceived("");
+            if (p !== "tarjeta") setRequiresInvoice(false);
           }
         }}
         showTipSingle={showTipSingle}
@@ -333,9 +373,17 @@ export default function POS() {
         setCashReceived={setCashReceived}
         change={change}
         orderType={orderType}
-        setOrderType={setOrderType}
+        setOrderType={(t) => {
+          setOrderType(t);
+          if (t !== "domicilio") setDeliveryFee("");
+        }}
         mesaNumber={mesaNumber}
         setMesaNumber={setMesaNumber}
+        deliveryFee={deliveryFee}
+        setDeliveryFee={setDeliveryFee}
+        requiresInvoice={requiresInvoice}
+        setRequiresInvoice={setRequiresInvoice}
+        cardInvolved={cardInvolved}
         splitMode={splitMode}
         setSplitMode={(v) => {
           setSplitMode(v);
@@ -344,19 +392,27 @@ export default function POS() {
             setTipPercent(null);
             setTipManual("");
             setCashReceived("");
-            setSplitDigital("tarjeta");
-            setSplitCashAmount("");
-            setSplitDigitalTip("");
+            setSplitType("cash-card");
+            setSplitAmountA("");
+            setSplitTip("");
             setSplitCashReceived("");
           }
         }}
-        splitDigital={splitDigital}
-        setSplitDigital={setSplitDigital}
-        splitCashAmount={splitCashAmount}
-        setSplitCashAmount={setSplitCashAmount}
-        splitDigitalAmount={splitDigitalAmount}
-        splitDigitalTip={splitDigitalTip}
-        setSplitDigitalTip={setSplitDigitalTip}
+        splitType={splitType}
+        setSplitType={(t) => {
+          setSplitType(t);
+          // Reset cash received si el nuevo tipo no incluye efectivo
+          if (!SPLIT_TYPES.find((s) => s.value === t)?.methods.includes("efectivo")) {
+            setSplitCashReceived("");
+          }
+        }}
+        splitMethods={splitMethods}
+        splitHasCash={splitHasCash}
+        splitAmountA={splitAmountA}
+        setSplitAmountA={setSplitAmountA}
+        splitAmountB={splitAmountB}
+        splitTip={splitTip}
+        setSplitTip={setSplitTip}
         splitCashReceived={splitCashReceived}
         setSplitCashReceived={setSplitCashReceived}
         splitCashChange={splitCashChange}
@@ -503,18 +559,25 @@ function VariableProductRow({ product, onAdd }) {
 // ----------------------------------------------------------------------------
 function CartPanel({
   sucursal,
-  items, subtotal, tip, total, onRemoveVar,
+  items, subtotal, tip, iva, deliveryNum, total, onRemoveVar,
   payment, setPayment,
   showTipSingle, tipPercent, setTipPercent, tipManual, setTipManual,
   isCashSingle, cashReceived, setCashReceived, change,
   orderType, setOrderType, mesaNumber, setMesaNumber,
-  splitMode, setSplitMode, splitDigital, setSplitDigital,
-  splitCashAmount, setSplitCashAmount, splitDigitalAmount,
-  splitDigitalTip, setSplitDigitalTip,
+  deliveryFee, setDeliveryFee,
+  requiresInvoice, setRequiresInvoice, cardInvolved,
+  splitMode, setSplitMode,
+  splitType, setSplitType, splitMethods, splitHasCash,
+  splitAmountA, setSplitAmountA, splitAmountB,
+  splitTip, setSplitTip,
   splitCashReceived, setSplitCashReceived, splitCashChange,
   onCharge, submitting, itemsCount, showDetail, setShowDetail,
 }) {
   const isValleDorado = sucursal === "Valle Dorado";
+  const summaryExtras = [];
+  if (tip > 0) summaryExtras.push(`Propina ${formatMXN(tip)}`);
+  if (iva > 0) summaryExtras.push(`IVA ${formatMXN(iva)}`);
+  if (deliveryNum > 0) summaryExtras.push(`Envío ${formatMXN(deliveryNum)}`);
 
   return (
     <section
@@ -571,12 +634,12 @@ function CartPanel({
               </span>
             )}
           </p>
-          {tip > 0 && (
+          {summaryExtras.length > 0 && (
             <p
               className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 leading-none mt-0.5"
               data-testid="cart-subtotal"
             >
-              Subtotal {formatMXN(subtotal)} · Propina {formatMXN(tip)}
+              Subtotal {formatMXN(subtotal)} · {summaryExtras.join(" · ")}
             </p>
           )}
         </div>
@@ -645,6 +708,29 @@ function CartPanel({
             )}
           </div>
         )}
+        {/* Input Envío (sólo Domicilio) */}
+        {orderType === "domicilio" && (
+          <div className="mt-1.5 flex items-center gap-1.5" data-testid="delivery-area">
+            <label className="text-[10px] uppercase tracking-widest font-black text-amber-700 w-14">
+              Envío
+            </label>
+            <div className="relative flex-1">
+              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-400 font-black">
+                $
+              </span>
+              <input
+                data-testid="input-delivery"
+                type="number"
+                inputMode="decimal"
+                value={deliveryFee}
+                onChange={(e) => setDeliveryFee(e.target.value)}
+                placeholder="0"
+                className="w-full h-10 pl-6 pr-2 text-base font-black border-2 border-amber-200 rounded-lg outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 bg-amber-50/40"
+                min="0"
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Toggle split */}
@@ -658,7 +744,7 @@ function CartPanel({
               : "bg-white text-amber-700 border-amber-300"
           }`}
         >
-          {splitMode ? "↓ Pago dividido activo · cambiar a pago único" : "+ Dividir pago (efectivo + tarjeta/transf.)"}
+          {splitMode ? "↓ Pago dividido activo · cambiar a pago único" : "+ Dividir pago"}
         </button>
       </div>
 
@@ -682,6 +768,28 @@ function CartPanel({
               </button>
             );
           })}
+        </div>
+      )}
+
+      {/* Toggle Factura (+16% IVA) - solo si tarjeta involucrada */}
+      {cardInvolved && (
+        <div className="px-3 pb-1.5">
+          <button
+            data-testid="btn-invoice"
+            onClick={() => setRequiresInvoice(!requiresInvoice)}
+            className={`w-full h-11 rounded-md text-[11px] uppercase tracking-widest font-black border-2 tap-scale flex items-center justify-between px-3 ${
+              requiresInvoice
+                ? "bg-[#006400] text-white border-[#006400]"
+                : "bg-white text-[#006400] border-[#006400]"
+            }`}
+          >
+            <span>{requiresInvoice ? "✓" : "○"} Factura (+16% IVA)</span>
+            {requiresInvoice && (
+              <span className="font-display text-base" data-testid="iva-value">
+                +{formatMXN(iva)}
+              </span>
+            )}
+          </button>
         </div>
       )}
 
@@ -772,114 +880,123 @@ function CartPanel({
       {/* PAGO DIVIDIDO */}
       {splitMode && (
         <div className="px-3 pb-2 space-y-2" data-testid="split-area">
-          {/* Selector método digital */}
-          <div className="grid grid-cols-2 gap-1.5">
-            {["tarjeta", "transferencia"].map((m) => {
-              const active = splitDigital === m;
+          {/* Selector tipo de split */}
+          <div className="grid grid-cols-1 gap-1.5">
+            {SPLIT_TYPES.map((s) => {
+              const active = splitType === s.value;
               return (
                 <button
-                  key={m}
-                  data-testid={`split-digital-${m}`}
-                  onClick={() => setSplitDigital(m)}
+                  key={s.value}
+                  data-testid={`split-type-${s.value}`}
+                  onClick={() => setSplitType(s.value)}
                   className={`h-9 rounded-md text-[11px] uppercase tracking-widest font-black border-2 tap-scale ${
                     active
                       ? "bg-[#006400] text-white border-[#006400]"
                       : "bg-white text-[#006400] border-[#006400]"
                   }`}
                 >
-                  Efectivo + {PAYMENT_LABELS[m]}
+                  {s.label}
                 </button>
               );
             })}
           </div>
 
-          {/* Monto efectivo */}
+          {/* Parte A */}
           <div className="bg-zinc-50 border-2 border-zinc-200 rounded-md p-2 space-y-1.5">
             <p className="text-[10px] uppercase tracking-widest font-black text-zinc-700">
-              💵 Parte en efectivo
+              {splitMethods[0] === "efectivo" ? "💵" : "💳"} Parte en {PAYMENT_LABELS[splitMethods[0]]}
             </p>
             <div className="flex items-center gap-1.5">
               <span className="text-zinc-400 font-black w-4">$</span>
               <input
-                data-testid="split-cash-amount"
+                data-testid="split-amount-a"
                 type="number"
                 inputMode="decimal"
-                value={splitCashAmount}
-                onChange={(e) => setSplitCashAmount(e.target.value)}
+                value={splitAmountA}
+                onChange={(e) => setSplitAmountA(e.target.value)}
                 placeholder="0"
                 className="flex-1 h-10 px-2 text-base font-black border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
                 min="0"
               />
               <button
-                onClick={() => setSplitCashAmount(String(Math.round(subtotal / 2)))}
+                onClick={() => setSplitAmountA(String(Math.round((total / 2) * 100) / 100))}
                 className="h-10 px-2 rounded-md bg-white border-2 border-zinc-300 text-[10px] uppercase font-black active:bg-zinc-100 tap-scale"
-                data-testid="split-cash-half"
+                data-testid="split-half"
               >
                 Mitad
               </button>
             </div>
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] uppercase tracking-widest font-black text-zinc-500 w-14">
-                Recibido
-              </span>
-              <input
-                data-testid="split-cash-received"
-                type="number"
-                inputMode="decimal"
-                value={splitCashReceived}
-                onChange={(e) => setSplitCashReceived(e.target.value)}
-                placeholder="Opcional"
-                className="flex-1 h-9 px-2 text-sm font-black border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
-                min="0"
-              />
-            </div>
-            {splitCashChange > 0 && (
-              <div
-                className="flex items-center justify-between bg-emerald-50 border border-emerald-200 rounded-md px-2 py-1"
-                data-testid="split-change"
-              >
-                <span className="text-[10px] uppercase tracking-widest font-black text-emerald-900">
-                  Cambio
-                </span>
-                <span className="font-display text-lg font-black text-emerald-700 leading-none">
-                  {formatMXN(splitCashChange)}
-                </span>
-              </div>
+            {splitHasCash && splitMethods[0] === "efectivo" && (
+              <>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] uppercase tracking-widest font-black text-zinc-500 w-14">
+                    Recibido
+                  </span>
+                  <input
+                    data-testid="split-cash-received"
+                    type="number"
+                    inputMode="decimal"
+                    value={splitCashReceived}
+                    onChange={(e) => setSplitCashReceived(e.target.value)}
+                    placeholder="Opcional"
+                    className="flex-1 h-9 px-2 text-sm font-black border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
+                    min="0"
+                  />
+                </div>
+                {splitCashChange > 0 && (
+                  <div
+                    className="flex items-center justify-between bg-emerald-50 border border-emerald-200 rounded-md px-2 py-1"
+                    data-testid="split-change"
+                  >
+                    <span className="text-[10px] uppercase tracking-widest font-black text-emerald-900">
+                      Cambio
+                    </span>
+                    <span className="font-display text-lg font-black text-emerald-700 leading-none">
+                      {formatMXN(splitCashChange)}
+                    </span>
+                  </div>
+                )}
+              </>
             )}
           </div>
 
-          {/* Parte digital */}
+          {/* Parte B */}
           <div className="bg-zinc-50 border-2 border-zinc-200 rounded-md p-2 space-y-1.5">
             <p className="text-[10px] uppercase tracking-widest font-black text-zinc-700">
-              💳 Parte en {PAYMENT_LABELS[splitDigital]}
+              {splitMethods[1] === "efectivo" ? "💵" : "💳"} Parte en {PAYMENT_LABELS[splitMethods[1]]}
             </p>
             <div
               className="flex items-center justify-between bg-white border-2 border-zinc-200 rounded-md px-2 h-10"
-              data-testid="split-digital-amount"
+              data-testid="split-amount-b"
             >
               <span className="text-[10px] uppercase tracking-widest font-black text-zinc-500">
                 Monto
               </span>
               <span className="font-display text-xl font-black text-[#006400]">
-                {formatMXN(splitDigitalAmount)}
+                {formatMXN(splitAmountB)}
               </span>
             </div>
-            <div className="flex items-center gap-1.5">
+            {/* Tip input: si parte B es digital, va aquí; si A es digital (card-transfer), también va en A. Único campo. */}
+          </div>
+
+          {/* Propina (única para el split) */}
+          {(splitMethods[0] !== "efectivo" || splitMethods[1] !== "efectivo") && (
+            <div className="flex items-center gap-1.5 px-1" data-testid="split-tip-area">
               <span className="text-[10px] uppercase tracking-widest font-black text-zinc-500 w-14">
                 Propina
               </span>
               <input
-                data-testid="split-digital-tip"
+                data-testid="split-tip"
                 type="number"
                 inputMode="decimal"
-                value={splitDigitalTip}
-                onChange={(e) => setSplitDigitalTip(e.target.value)}
+                value={splitTip}
+                onChange={(e) => setSplitTip(e.target.value)}
                 placeholder="0"
                 className="flex-1 h-9 px-2 text-sm font-black border-2 border-zinc-200 rounded-md outline-none focus:border-[#006400]"
                 min="0"
               />
             </div>
-          </div>
+          )}
         </div>
       )}
 

@@ -39,7 +39,9 @@ export default function AdminDashboard() {
   const [sucursales, setSucursales] = useState([]);     // ["Valle Dorado", ...]
   const [sucursalItems, setSucursalItems] = useState([]); // [{id, name, sort_order}]
   const [tab, setTab] = useState("dashboard");
-  const [periodMode, setPeriodMode] = useState("week"); // "week" | "month"
+  const [periodMode, setPeriodMode] = useState("week"); // "week" | "month" | "custom"
+  const [customStart, setCustomStart] = useState(null);
+  const [customEnd, setCustomEnd] = useState(null);
 
   const [stats, setStats] = useState(null);
   const [periodStats, setPeriodStats] = useState(null);
@@ -77,7 +79,17 @@ export default function AdminDashboard() {
           api.get(`/users${passQuery}`),
         ];
         if (tab === "periodo") {
-          calls.push(api.get(`/dashboard/period?period=${periodMode}&date=${d}&sucursal=${sucursal}&caja=${encodeURIComponent(caja)}`));
+          const periodParams =
+            periodMode === "custom"
+              ? customStart && customEnd
+                ? `period=custom&start_date=${fmtDateAPI(customStart)}&end_date=${fmtDateAPI(customEnd)}`
+                : null
+              : `period=${periodMode}&date=${d}`;
+          if (periodParams) {
+            calls.push(
+              api.get(`/dashboard/period?${periodParams}&sucursal=${sucursal}&caja=${encodeURIComponent(caja)}`)
+            );
+          }
         }
         const results = await Promise.all(calls);
         if (cancelled) return;
@@ -85,7 +97,8 @@ export default function AdminDashboard() {
         setSales(results[1].data);
         setProducts(results[2].data);
         setUsers(results[3].data);
-        if (tab === "periodo") setPeriodStats(results[4].data);
+        if (tab === "periodo" && results[4]) setPeriodStats(results[4].data);
+        else if (tab === "periodo") setPeriodStats(null);
       } catch {
         /* silent */
       }
@@ -96,7 +109,7 @@ export default function AdminDashboard() {
       cancelled = true;
       clearInterval(t);
     };
-  }, [date, sucursal, caja, showPasswords, tab, periodMode]);
+  }, [date, sucursal, caja, showPasswords, tab, periodMode, customStart, customEnd]);
 
   // Forzar refresh manual (después de cambios desde UI)
   const refresh = async () => {
@@ -240,6 +253,10 @@ export default function AdminDashboard() {
             date={date}
             sucursal={sucursal}
             caja={caja}
+            customStart={customStart}
+            setCustomStart={setCustomStart}
+            customEnd={customEnd}
+            setCustomEnd={setCustomEnd}
           />
         )}
         {tab === "sales" && <SalesTab sales={sales} />}
@@ -264,25 +281,27 @@ export default function AdminDashboard() {
 // ----------------------------------------------------------------------------
 // Date picker
 // ----------------------------------------------------------------------------
-function DatePicker({ date, setDate }) {
+function DatePicker({ date, setDate, testid, placeholder }) {
   const [open, setOpen] = useState(false);
+  const btnTestId = testid ? `btn-date-${testid}` : "btn-date-picker";
+  const lblTestId = testid ? `label-date-${testid}` : "current-date-label";
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
-          data-testid="btn-date-picker"
+          data-testid={btnTestId}
           className="h-11 px-3 inline-flex items-center gap-2 text-xs uppercase tracking-widest font-bold border-2 border-[#006400] text-[#006400] bg-white rounded-md tap-scale"
         >
-          <span className="text-zinc-500">Fecha</span>
-          <span className="text-zinc-900" data-testid="current-date-label">
-            {format(date, "dd MMM yyyy", { locale: es })}
+          <span className="text-zinc-500">{placeholder || "Fecha"}</span>
+          <span className="text-zinc-900" data-testid={lblTestId}>
+            {date ? format(date, "dd MMM yyyy", { locale: es }) : "—"}
           </span>
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-auto p-0 bg-white border-2 border-zinc-200 rounded-md">
         <Calendar
           mode="single"
-          selected={date}
+          selected={date || undefined}
           onSelect={(d) => { if (d) { setDate(d); setOpen(false); } }}
           disabled={(d) => d > new Date()}
           initialFocus
@@ -1228,12 +1247,19 @@ function SucursalesTab({ items, reload }) {
 // ----------------------------------------------------------------------------
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
-function PeriodTab({ stats, periodMode, setPeriodMode, date, sucursal, caja }) {
-  if (!stats) return <div className="text-zinc-500">Cargando…</div>;
+function PeriodTab({ stats, periodMode, setPeriodMode, date, sucursal, caja, customStart, setCustomStart, customEnd, setCustomEnd }) {
+  const isCustom = periodMode === "custom";
+  const customReady = isCustom && customStart && customEnd;
 
   const downloadCSV = () => {
-    const d = fmtDateAPI(date);
-    const url = `${BACKEND_URL}/api/reports/csv?period=${periodMode}&date=${d}&sucursal=${encodeURIComponent(sucursal)}&caja=${encodeURIComponent(caja)}`;
+    let url;
+    if (isCustom) {
+      if (!customReady) return;
+      url = `${BACKEND_URL}/api/reports/csv?period=custom&start_date=${fmtDateAPI(customStart)}&end_date=${fmtDateAPI(customEnd)}&sucursal=${encodeURIComponent(sucursal)}&caja=${encodeURIComponent(caja)}`;
+    } else {
+      const d = fmtDateAPI(date);
+      url = `${BACKEND_URL}/api/reports/csv?period=${periodMode}&date=${d}&sucursal=${encodeURIComponent(sucursal)}&caja=${encodeURIComponent(caja)}`;
+    }
     window.open(url, "_blank");
   };
 
@@ -1245,6 +1271,7 @@ function PeriodTab({ stats, periodMode, setPeriodMode, date, sucursal, caja }) {
           {[
             ["week", "Semanal"],
             ["month", "Mensual"],
+            ["custom", "Personalizado"],
           ].map(([k, label]) => (
             <button
               key={k}
@@ -1259,22 +1286,58 @@ function PeriodTab({ stats, periodMode, setPeriodMode, date, sucursal, caja }) {
           ))}
         </div>
         <div className="flex items-center gap-3">
-          <p className="text-xs uppercase tracking-widest font-bold text-zinc-500" data-testid="period-range">
-            {stats.start} → {stats.end}
-          </p>
+          {stats && (
+            <p className="text-xs uppercase tracking-widest font-bold text-zinc-500" data-testid="period-range">
+              {stats.start} → {stats.end}
+            </p>
+          )}
           <button
             data-testid="btn-export-csv"
             onClick={downloadCSV}
-            className="h-11 px-4 rounded-md bg-zinc-900 text-white text-xs uppercase tracking-widest font-black tap-scale"
+            disabled={isCustom && !customReady}
+            className="h-11 px-4 rounded-md bg-zinc-900 text-white text-xs uppercase tracking-widest font-black tap-scale disabled:bg-zinc-300 disabled:cursor-not-allowed"
           >
             Exportar CSV
           </button>
         </div>
       </div>
 
+      {/* Selectores de rango personalizado */}
+      {isCustom && (
+        <div className="flex flex-wrap items-end gap-3 bg-amber-50 border-2 border-amber-200 rounded-md px-3 py-2" data-testid="custom-range-area">
+          <div className="flex flex-col gap-1">
+            <span className="text-[10px] uppercase tracking-widest font-black text-amber-800">Desde</span>
+            <DatePicker date={customStart} setDate={setCustomStart} testid="custom-start" placeholder="Inicio" />
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-[10px] uppercase tracking-widest font-black text-amber-800">Hasta</span>
+            <DatePicker date={customEnd} setDate={setCustomEnd} testid="custom-end" placeholder="Fin" />
+          </div>
+          {!customReady && (
+            <p className="text-[11px] font-bold text-amber-700">Selecciona ambas fechas para ver el periodo.</p>
+          )}
+        </div>
+      )}
+
+      {!stats ? (
+        <div className="text-zinc-500" data-testid="period-empty">
+          {isCustom && !customReady ? "Selecciona un rango de fechas." : "Cargando…"}
+        </div>
+      ) : (
+        <PeriodStatsBody stats={stats} periodMode={periodMode} />
+      )}
+    </div>
+  );
+}
+
+function PeriodStatsBody({ stats, periodMode }) {
+  const periodLabel =
+    periodMode === "week" ? "semanal" : periodMode === "month" ? "mensual" : "rango";
+  return (
+    <>
       {/* KPIs principales */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-        <KpiCard label={`Total ${periodMode === "week" ? "semanal" : "mensual"}`}
+        <KpiCard label={`Total ${periodLabel}`}
                  value={formatMXN(stats.grand_total)} testid="period-kpi-total" primary />
         <KpiCard label="# Ventas" value={stats.sales_count} testid="period-kpi-count" />
         <KpiCard label="Promedio diario" value={formatMXN(stats.avg_daily)} testid="period-kpi-daily" />
@@ -1405,7 +1468,7 @@ function PeriodTab({ stats, periodMode, setPeriodMode, date, sucursal, caja }) {
           )}
         </div>
       </section>
-    </div>
+    </>
   );
 }
 
