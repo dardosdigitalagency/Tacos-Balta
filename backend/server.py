@@ -497,6 +497,9 @@ async def list_sales(
         d.setdefault("mesa_number", None)
         d.setdefault("cash_received", None)
         d.setdefault("change_given", None)
+        d.setdefault("iva", 0)
+        d.setdefault("delivery_fee", 0)
+        d.setdefault("invoice_requested", False)
     return docs
 
 
@@ -534,6 +537,9 @@ async def dashboard(
     grand_total = 0.0
     grand_subtotal = 0.0
     grand_tip = 0.0
+    grand_iva = 0.0
+    grand_delivery = 0.0
+    invoice_count = 0
     total_items = 0
     tip_breakdown = {"tarjeta": 0.0, "transferencia": 0.0}
     by_sucursal: dict = {s: {"count": 0, "total": 0.0} for s in (await get_sucursales_names())}
@@ -576,6 +582,10 @@ async def dashboard(
         grand_subtotal += sub
         grand_tip += tip
         grand_total += tot
+        grand_iva += float(s.get("iva", 0) or 0)
+        grand_delivery += float(s.get("delivery_fee", 0) or 0)
+        if s.get("invoice_requested"):
+            invoice_count += 1
 
         suc = s.get("sucursal", "—")
         if suc in by_sucursal:
@@ -627,6 +637,9 @@ async def dashboard(
         "grand_total": round(grand_total, 2),
         "grand_subtotal": round(grand_subtotal, 2),
         "grand_tip": round(grand_tip, 2),
+        "grand_iva": round(grand_iva, 2),
+        "grand_delivery": round(grand_delivery, 2),
+        "invoice_count": invoice_count,
         "sales_count": sales_count,
         "avg_ticket": avg_ticket,
         "avg_items": avg_items,
@@ -699,6 +712,9 @@ async def dashboard_period(
     grand_total = 0.0
     grand_subtotal = 0.0
     grand_tip = 0.0
+    grand_iva = 0.0
+    grand_delivery = 0.0
+    invoice_count = 0
     total_items = 0
 
     for s in sales:
@@ -776,6 +792,10 @@ async def dashboard_period(
         grand_subtotal += sub
         grand_tip += tip
         grand_total += tot
+        grand_iva += float(s.get("iva", 0) or 0)
+        grand_delivery += float(s.get("delivery_fee", 0) or 0)
+        if s.get("invoice_requested"):
+            invoice_count += 1
 
     # Construir serie de días (incluyendo días sin ventas)
     days_list = []
@@ -836,6 +856,9 @@ async def dashboard_period(
         "grand_total": round(grand_total, 2),
         "grand_subtotal": round(grand_subtotal, 2),
         "grand_tip": round(grand_tip, 2),
+        "grand_iva": round(grand_iva, 2),
+        "grand_delivery": round(grand_delivery, 2),
+        "invoice_count": invoice_count,
         "sales_count": sales_count,
         "total_items": total_items,
         "avg_ticket": avg_ticket,
@@ -894,6 +917,7 @@ async def report_csv(
         key = (dt_mx.strftime("%Y-%m-%d"), s.get("sucursal", "—"))
         b = buckets.setdefault(key, {
             "count": 0, "total": 0.0, "subtotal": 0.0, "tip": 0.0,
+            "iva": 0.0, "delivery": 0.0, "invoices": 0,
             "efectivo": 0.0, "transferencia": 0.0, "tarjeta": 0.0,
             "tip_tarjeta": 0.0, "tip_transferencia": 0.0,
             "mesa": 0.0, "llevar": 0.0, "domicilio": 0.0,
@@ -910,6 +934,10 @@ async def report_csv(
         b["total"] += tot
         b["subtotal"] += sub
         b["tip"] += tip
+        b["iva"] += float(s.get("iva", 0) or 0)
+        b["delivery"] += float(s.get("delivery_fee", 0) or 0)
+        if s.get("invoice_requested"):
+            b["invoices"] += 1
         # Desglose por método de pago: si hay split, usa esos amounts
         if payments:
             for p in payments:
@@ -940,6 +968,7 @@ async def report_csv(
     w = csv.writer(buf)
     w.writerow([
         "Fecha", "Sucursal", "Ventas", "Total", "Subtotal", "Propinas",
+        "IVA", "Envío", "Facturas (#)",
         "Ticket promedio", "Items vendidos",
         "Efectivo", "Transferencia", "Tarjeta",
         "Propina tarjeta", "Propina transferencia",
@@ -961,6 +990,7 @@ async def report_csv(
             w.writerow([
                 date_key, suc, b["count"],
                 f"{b['total']:.2f}", f"{b['subtotal']:.2f}", f"{b['tip']:.2f}",
+                f"{b['iva']:.2f}", f"{b['delivery']:.2f}", b["invoices"],
                 f"{avg:.2f}", b["items"],
                 f"{b['efectivo']:.2f}", f"{b['transferencia']:.2f}", f"{b['tarjeta']:.2f}",
                 f"{b['tip_tarjeta']:.2f}", f"{b['tip_transferencia']:.2f}",
@@ -981,6 +1011,9 @@ async def report_csv(
             tot_count, f"{tot_total:.2f}",
             f"{sum(b['subtotal'] for b in buckets.values()):.2f}",
             f"{sum(b['tip'] for b in buckets.values()):.2f}",
+            f"{sum(b['iva'] for b in buckets.values()):.2f}",
+            f"{sum(b['delivery'] for b in buckets.values()):.2f}",
+            sum(b["invoices"] for b in buckets.values()),
             f"{tot_avg:.2f}",
             sum(b["items"] for b in buckets.values()),
             f"{sum(b['efectivo'] for b in buckets.values()):.2f}",

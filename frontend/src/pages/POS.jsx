@@ -46,7 +46,7 @@ export default function POS() {
   const [mesaNumber, setMesaNumber] = useState("");
   const [cashReceived, setCashReceived] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [showDetail, setShowDetail] = useState(false);
+  const [showDetail, setShowDetail] = useState(true);
 
   // Nuevos: factura y envío
   const [requiresInvoice, setRequiresInvoice] = useState(false);
@@ -186,7 +186,7 @@ export default function POS() {
     setOrderType("mesa");
     setMesaNumber("");
     setCashReceived("");
-    setShowDetail(false);
+    setShowDetail(true);
     setRequiresInvoice(false);
     setDeliveryFee("");
     setSplitMode(false);
@@ -332,7 +332,6 @@ export default function POS() {
               qty={cart[p.id] || 0}
               onInc={() => inc(p.id)}
               onDec={() => dec(p.id)}
-              onChange={(v) => setQty(p.id, v)}
             />
           )
         )}
@@ -429,7 +428,7 @@ export default function POS() {
 // ----------------------------------------------------------------------------
 // Product Row (fixed) - diseño limpio sin etiqueta, color por barra lateral
 // ----------------------------------------------------------------------------
-function ProductRow({ product, qty, onInc, onDec, onChange }) {
+function ProductRow({ product, qty, onInc, onDec }) {
   const selected = qty > 0;
   const isDrink = product.category === "bebida";
   const accent = isDrink ? "#0369A1" : "#006400";
@@ -468,15 +467,14 @@ function ProductRow({ product, qty, onInc, onDec, onChange }) {
         >
           −
         </button>
-        <input
-          data-testid={`input-qty-${product.id}`}
-          type="number"
-          inputMode="numeric"
-          value={qty}
-          onChange={(e) => onChange(e.target.value)}
-          className="w-12 sm:w-14 h-11 sm:h-12 text-center text-xl font-black border border-zinc-200 rounded-lg outline-none focus:border-[#006400] focus:ring-2 focus:ring-[#006400]/20"
-          min="0"
-        />
+        {/* Display-only quantity (no input field to prevent accidental edits on mobile) */}
+        <div
+          data-testid={`qty-display-${product.id}`}
+          aria-label={`Cantidad ${qty}`}
+          className="w-12 sm:w-14 h-11 sm:h-12 flex items-center justify-center text-xl font-black border border-zinc-200 rounded-lg bg-white select-none pointer-events-none"
+        >
+          {qty}
+        </div>
         <button
           data-testid={`btn-inc-${product.id}`}
           onClick={onInc}

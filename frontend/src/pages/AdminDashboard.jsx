@@ -388,6 +388,30 @@ function DashboardTab({ stats, sucursal }) {
         />
         <KpiCard label="Subtotal productos" value={formatMXN(stats.grand_subtotal)} testid="kpi-subtotal" />
       </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <KpiCard
+          label="IVA cobrado"
+          value={formatMXN(stats.grand_iva || 0)}
+          sub={`${stats.invoice_count || 0} factura${(stats.invoice_count || 0) === 1 ? "" : "s"}`}
+          testid="kpi-iva"
+        />
+        <KpiCard
+          label="Envíos cobrados"
+          value={formatMXN(stats.grand_delivery || 0)}
+          testid="kpi-delivery"
+        />
+        <KpiCard
+          label="Propina + IVA + Envío"
+          value={formatMXN((stats.grand_tip || 0) + (stats.grand_iva || 0) + (stats.grand_delivery || 0))}
+          testid="kpi-extras-total"
+        />
+        <KpiCard
+          label="Solo productos"
+          value={formatMXN(stats.grand_subtotal || 0)}
+          sub="sin propina/IVA/envío"
+          testid="kpi-products-only"
+        />
+      </div>
 
       {/* Tipo de orden */}
       <section className="bg-white border-2 border-zinc-100 rounded-md p-4" data-testid="order-type-section">
@@ -625,6 +649,8 @@ function SalesTab({ sales }) {
               <Th>Productos</Th>
               <Th>Subtotal</Th>
               <Th>Propina</Th>
+              <Th>IVA</Th>
+              <Th>Envío</Th>
               <Th>Total</Th>
               <Th>Pago</Th>
             </tr>
@@ -655,6 +681,25 @@ function SalesTab({ sales }) {
                 </Td>
                 <Td className="font-bold">{formatMXN(s.subtotal)}</Td>
                 <Td className="font-bold">{s.tip > 0 ? formatMXN(s.tip) : "—"}</Td>
+                <Td className="font-bold">
+                  {s.iva > 0 ? (
+                    <span data-testid={`sale-iva-${s.id}`} className="inline-flex items-center gap-1">
+                      {formatMXN(s.iva)}
+                      {s.invoice_requested && (
+                        <span className="px-1.5 py-0.5 rounded bg-[#006400] text-white text-[9px] uppercase tracking-widest font-black">
+                          Factura
+                        </span>
+                      )}
+                    </span>
+                  ) : "—"}
+                </Td>
+                <Td className="font-bold">
+                  {s.delivery_fee > 0 ? (
+                    <span data-testid={`sale-delivery-${s.id}`} className="text-amber-700">
+                      {formatMXN(s.delivery_fee)}
+                    </span>
+                  ) : "—"}
+                </Td>
                 <Td className="font-display text-lg font-black text-[#006400]">{formatMXN(s.total)}</Td>
                 <Td>
                   <span className="text-xs uppercase tracking-widest font-bold">
@@ -1348,6 +1393,31 @@ function PeriodStatsBody({ stats, periodMode }) {
         <KpiCard label="Productos vendidos" value={stats.total_items} testid="period-kpi-items" />
         <KpiCard label="Días con ventas" value={stats.days_with_sales} testid="period-kpi-days" />
         <KpiCard label="Items por venta" value={stats.avg_items} testid="period-kpi-avg-items" />
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <KpiCard
+          label="IVA cobrado"
+          value={formatMXN(stats.grand_iva || 0)}
+          sub={`${stats.invoice_count || 0} factura${(stats.invoice_count || 0) === 1 ? "" : "s"}`}
+          testid="period-kpi-iva"
+        />
+        <KpiCard
+          label="Envíos cobrados"
+          value={formatMXN(stats.grand_delivery || 0)}
+          testid="period-kpi-delivery"
+        />
+        <KpiCard
+          label="Subtotal productos"
+          value={formatMXN(stats.grand_subtotal || 0)}
+          sub="sin propina/IVA/envío"
+          testid="period-kpi-subtotal"
+        />
+        <KpiCard
+          label="Extras del periodo"
+          value={formatMXN((stats.grand_tip || 0) + (stats.grand_iva || 0) + (stats.grand_delivery || 0))}
+          sub="propina + IVA + envío"
+          testid="period-kpi-extras"
+        />
       </div>
 
       {/* Highlights */}
