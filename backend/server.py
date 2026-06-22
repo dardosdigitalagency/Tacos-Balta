@@ -108,11 +108,13 @@ class SaleCreate(BaseModel):
     iva: float = 0.0
     invoice_requested: bool = False
     delivery_fee: float = 0.0
+    client_id: Optional[str] = None   # idempotency key del cliente
 
 
 class Sale(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    client_id: Optional[str] = None
     items: List[CartItem]
     subtotal: float
     tip: float = 0.0
@@ -381,6 +383,12 @@ async def delete_product(product_id: str):
 async def create_sale(body: SaleCreate):
     if not body.items:
         raise HTTPException(status_code=400, detail="Empty cart")
+    # Idempotencia: si ya existe una venta con este client_id, devolvemos esa misma
+    # (evita duplicados por reintentos del cliente cuando hay red intermitente).
+    if body.client_id:
+        existing = await db.sales.find_one({"client_id": body.client_id}, {"_id": 0})
+        if existing:
+            return Sale(**existing)
     valid_sucursales = await get_sucursales_names()
     if body.sucursal not in valid_sucursales:
         raise HTTPException(status_code=400, detail="Sucursal inválida")
@@ -443,6 +451,7 @@ async def create_sale(body: SaleCreate):
         )]
 
     sale = Sale(
+        client_id=body.client_id,
         items=body.items,
         subtotal=subtotal,
         tip=round(tip, 2),
@@ -464,7 +473,15 @@ async def create_sale(body: SaleCreate):
     doc = sale.model_dump()
     doc["items"] = [i.model_dump() for i in sale.items]
     doc["payments"] = [p.model_dump() for p in (sale.payments or [])]
-    await db.sales.insert_one(doc)
+    try:
+        await db.sales.insert_one(doc)
+    except Exception as e:
+        # Posible duplicado por carrera entre reintentos del mismo client_id
+        if body.client_id:
+            existing = await db.sales.find_one({"client_id": body.client_id}, {"_id": 0})
+            if existing:
+                return Sale(**existing)
+        raise HTTPException(status_code=500, detail=f"No se pudo guardar la venta: {e}")
     return sale
 
 
@@ -522,14 +539,14 @@ async def dashboard(
     sales = await db.sales.find(q, {"_id": 0}).to_list(10000)
 
     totals = {
-        "efectivo":      {"count": 0, "amount": 0.0, "tip": 0.0},
-        "transferencia": {"count": 0, "amount": 0.0, "tip": 0.0},
-        "tarjeta":       {"count": 0, "amount": 0.0, "tip": 0.0},
+        "efectivo":      {"count": 0, "amount": 0.0, "tip": 0.0, "iva": 0.0},
+        "transferencia": {"count": 0, "amount": 0.0, "tip": 0.0, "iva": 0.0},
+        "tarjeta":       {"count": 0, "amount": 0.0, "tip": 0.0, "iva": 0.0},
     }
     by_order_type = {
-        "mesa":      {"count": 0, "total": 0.0},
-        "llevar":    {"count": 0, "total": 0.0},
-        "domicilio": {"count": 0, "total": 0.0},
+        "mesa":      {"count": 0, "total": 0.0, "delivery": 0.0},
+        "llevar":    {"count": 0, "total": 0.0, "delivery": 0.0},
+        "domicilio": {"count": 0, "total": 0.0, "delivery": 0.0},
     }
     products_count: dict = {}
     products_amount: dict = {}
@@ -553,9 +570,12 @@ async def dashboard(
         ot = s.get("order_type", "mesa")
         ck = s.get("caja") or "—"
         payments = s.get("payments") or []
+        sale_iva = float(s.get("iva", 0) or 0)
+        sale_delivery = float(s.get("delivery_fee", 0) or 0)
 
         # Si la venta tiene desglose de pagos (mixto o single), úsalo
         if payments:
+            tarjeta_in_payments = any(p.get("method") == "tarjeta" for p in payments)
             for p in payments:
                 m = p.get("method")
                 pa = float(p.get("amount", 0))
@@ -566,24 +586,30 @@ async def dashboard(
                     totals[m]["tip"] += pt
                 if m in tip_breakdown:
                     tip_breakdown[m] += pt
+            # IVA siempre va a tarjeta (única condición donde aplica)
+            if tarjeta_in_payments and sale_iva > 0:
+                totals["tarjeta"]["iva"] += sale_iva
         else:
             # Legacy: usa payment_method único
             if pm in totals:
                 totals[pm]["count"] += 1
                 totals[pm]["amount"] += sub
                 totals[pm]["tip"] += tip
+                if pm == "tarjeta" and sale_iva > 0:
+                    totals[pm]["iva"] += sale_iva
             if pm in tip_breakdown:
                 tip_breakdown[pm] += tip
 
         if ot in by_order_type:
             by_order_type[ot]["count"] += 1
             by_order_type[ot]["total"] += tot
+            by_order_type[ot]["delivery"] += sale_delivery
 
         grand_subtotal += sub
         grand_tip += tip
         grand_total += tot
-        grand_iva += float(s.get("iva", 0) or 0)
-        grand_delivery += float(s.get("delivery_fee", 0) or 0)
+        grand_iva += sale_iva
+        grand_delivery += sale_delivery
         if s.get("invoice_requested"):
             invoice_count += 1
 
@@ -647,13 +673,15 @@ async def dashboard(
         "total_items": total_items,
         "by_payment": {k: {"count": v["count"],
                            "amount": round(v["amount"], 2),
-                           "tip": round(v["tip"], 2)} for k, v in totals.items()},
+                           "tip": round(v["tip"], 2),
+                           "iva": round(v["iva"], 2)} for k, v in totals.items()},
         "tip_breakdown": {k: round(v, 2) for k, v in tip_breakdown.items()},
         "by_sucursal": {k: {"count": v["count"], "total": round(v["total"], 2)}
                         for k, v in by_sucursal.items()},
         "by_caja": {k: {"count": v["count"], "total": round(v["total"], 2)}
                     for k, v in by_caja.items()},
-        "by_order_type": {k: {"count": v["count"], "total": round(v["total"], 2)}
+        "by_order_type": {k: {"count": v["count"], "total": round(v["total"], 2),
+                              "delivery": round(v["delivery"], 2)}
                           for k, v in by_order_type.items()},
         "top_products": top_products,
         "sales_by_hour": sales_by_hour,
@@ -1224,6 +1252,14 @@ async def on_startup():
     await seed_sucursales_if_empty()
     await seed_products_if_empty()
     await seed_users_if_empty()
+    # Índice único parcial para idempotencia de ventas (ignora docs sin client_id)
+    try:
+        await db.sales.create_index(
+            "client_id", unique=True,
+            partialFilterExpression={"client_id": {"$type": "string"}},
+        )
+    except Exception as e:
+        print(f"[startup] WARN no se pudo crear índice client_id: {e}")
 
 
 @app.on_event("shutdown")

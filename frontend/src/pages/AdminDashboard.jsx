@@ -366,29 +366,36 @@ function DashboardTab({ stats, sucursal }) {
 
   const orderTypeData = Object.entries(stats.by_order_type || {}).map(([k, v]) => ({
     key: k, name: ORDER_TYPE_LABELS[k] || k, total: v.total, count: v.count,
+    delivery: v.delivery || 0,
   }));
 
   return (
     <div className="space-y-5" data-testid="dashboard-tab">
-      {/* KPIs principales */}
+      {/* KPIs principales: lo esencial para arqueo */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-        <KpiCard label="Total" value={formatMXN(stats.grand_total)} testid="kpi-total" primary />
+        <KpiCard label="Total cobrado" value={formatMXN(stats.grand_total)} testid="kpi-total" primary />
         <KpiCard label="# Ventas" value={stats.sales_count} testid="kpi-count" />
         <KpiCard label="Ticket promedio" value={formatMXN(stats.avg_ticket)} testid="kpi-avg-ticket" />
-        <KpiCard label="Propinas" value={formatMXN(stats.grand_tip)} testid="kpi-tips" />
-      </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-        <KpiCard label="Productos vendidos" value={stats.total_items} testid="kpi-items-total" />
-        <KpiCard label="Items por venta" value={stats.avg_items} testid="kpi-avg-items" />
         <KpiCard
           label="Hora pico"
           value={stats.peak_hour ? stats.peak_hour.hour : "—"}
           sub={stats.peak_hour ? formatMXN(stats.peak_hour.total) : ""}
           testid="kpi-peak-hour"
         />
-        <KpiCard label="Subtotal productos" value={formatMXN(stats.grand_subtotal)} testid="kpi-subtotal" />
       </div>
+      {/* Desglose del total: Subtotal + Propina + IVA + Envío = Total */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <KpiCard
+          label="Productos (neto)"
+          value={formatMXN(stats.grand_subtotal)}
+          sub={`${stats.total_items} items`}
+          testid="kpi-subtotal"
+        />
+        <KpiCard
+          label="Propinas"
+          value={formatMXN(stats.grand_tip)}
+          testid="kpi-tips"
+        />
         <KpiCard
           label="IVA cobrado"
           value={formatMXN(stats.grand_iva || 0)}
@@ -399,17 +406,6 @@ function DashboardTab({ stats, sucursal }) {
           label="Envíos cobrados"
           value={formatMXN(stats.grand_delivery || 0)}
           testid="kpi-delivery"
-        />
-        <KpiCard
-          label="Propina + IVA + Envío"
-          value={formatMXN((stats.grand_tip || 0) + (stats.grand_iva || 0) + (stats.grand_delivery || 0))}
-          testid="kpi-extras-total"
-        />
-        <KpiCard
-          label="Solo productos"
-          value={formatMXN(stats.grand_subtotal || 0)}
-          sub="sin propina/IVA/envío"
-          testid="kpi-products-only"
         />
       </div>
 
@@ -438,6 +434,14 @@ function DashboardTab({ stats, sucursal }) {
               <p className="text-sm text-zinc-600 mt-1">
                 {o.count} {o.count === 1 ? "venta" : "ventas"}
               </p>
+              {o.key === "domicilio" && (o.delivery || 0) > 0 && (
+                <p className="text-xs uppercase tracking-widest font-bold text-amber-700 mt-2" data-testid="ordertype-delivery">
+                  Envío cobrado:{" "}
+                  <span className="text-amber-900 font-black">
+                    {formatMXN(o.delivery)}
+                  </span>
+                </p>
+              )}
             </div>
           ))}
         </div>
@@ -449,31 +453,53 @@ function DashboardTab({ stats, sucursal }) {
           Por método de pago
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {Object.entries(stats.by_payment).map(([k, v]) => (
-            <div
-              key={k}
-              data-testid={`payment-${k}`}
-              className="border-2 border-zinc-100 rounded-md p-3"
-            >
-              <p className="text-[10px] uppercase tracking-widest font-bold text-zinc-500">
-                {PAYMENT_LABELS[k]}
-              </p>
-              <p className="font-display text-2xl sm:text-3xl font-black text-[#006400] leading-none mt-1">
-                {formatMXN(v.amount)}
-              </p>
-              <p className="text-sm text-zinc-600 mt-1">
-                {v.count} {v.count === 1 ? "venta" : "ventas"}
-              </p>
-              {(k === "tarjeta" || k === "transferencia") && (
-                <p className="text-xs uppercase tracking-widest font-bold text-zinc-500 mt-2">
-                  Propina:{" "}
-                  <span className="text-zinc-900 font-black" data-testid={`tip-${k}`}>
-                    {formatMXN(v.tip)}
-                  </span>
+          {Object.entries(stats.by_payment).map(([k, v]) => {
+            const ivaVal = v.iva || 0;
+            const tipVal = v.tip || 0;
+            const netoProductos = Math.max(0, (v.amount || 0) - tipVal - ivaVal);
+            return (
+              <div
+                key={k}
+                data-testid={`payment-${k}`}
+                className="border-2 border-zinc-100 rounded-md p-3"
+              >
+                <p className="text-[10px] uppercase tracking-widest font-bold text-zinc-500">
+                  {PAYMENT_LABELS[k]}
                 </p>
-              )}
-            </div>
-          ))}
+                <p className="font-display text-2xl sm:text-3xl font-black text-[#006400] leading-none mt-1">
+                  {formatMXN(v.amount)}
+                </p>
+                <p className="text-sm text-zinc-600 mt-1">
+                  {v.count} {v.count === 1 ? "venta" : "ventas"}
+                </p>
+                {/* Desglose dentro del bloque: productos / propina / IVA */}
+                <div className="mt-2 space-y-0.5 text-[11px]">
+                  <div className="flex justify-between text-zinc-500">
+                    <span>Productos</span>
+                    <span className="text-zinc-900 font-black" data-testid={`payment-net-${k}`}>
+                      {formatMXN(netoProductos)}
+                    </span>
+                  </div>
+                  {tipVal > 0 && (
+                    <div className="flex justify-between text-zinc-500">
+                      <span>Propina</span>
+                      <span className="text-zinc-900 font-black" data-testid={`tip-${k}`}>
+                        {formatMXN(tipVal)}
+                      </span>
+                    </div>
+                  )}
+                  {ivaVal > 0 && (
+                    <div className="flex justify-between text-[#006400]">
+                      <span>IVA (factura)</span>
+                      <span className="font-black" data-testid={`payment-iva-${k}`}>
+                        {formatMXN(ivaVal)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </section>
 
@@ -1388,13 +1414,15 @@ function PeriodStatsBody({ stats, periodMode }) {
         <KpiCard label="Promedio diario" value={formatMXN(stats.avg_daily)} testid="period-kpi-daily" />
         <KpiCard label="Ticket promedio" value={formatMXN(stats.avg_ticket)} testid="period-kpi-avg-ticket" />
       </div>
+      {/* Desglose: Subtotal + Propina + IVA + Envío = Total */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <KpiCard
+          label="Productos (neto)"
+          value={formatMXN(stats.grand_subtotal || 0)}
+          sub={`${stats.total_items} items`}
+          testid="period-kpi-subtotal"
+        />
         <KpiCard label="Propinas" value={formatMXN(stats.grand_tip)} testid="period-kpi-tips" />
-        <KpiCard label="Productos vendidos" value={stats.total_items} testid="period-kpi-items" />
-        <KpiCard label="Días con ventas" value={stats.days_with_sales} testid="period-kpi-days" />
-        <KpiCard label="Items por venta" value={stats.avg_items} testid="period-kpi-avg-items" />
-      </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         <KpiCard
           label="IVA cobrado"
           value={formatMXN(stats.grand_iva || 0)}
@@ -1405,18 +1433,6 @@ function PeriodStatsBody({ stats, periodMode }) {
           label="Envíos cobrados"
           value={formatMXN(stats.grand_delivery || 0)}
           testid="period-kpi-delivery"
-        />
-        <KpiCard
-          label="Subtotal productos"
-          value={formatMXN(stats.grand_subtotal || 0)}
-          sub="sin propina/IVA/envío"
-          testid="period-kpi-subtotal"
-        />
-        <KpiCard
-          label="Extras del periodo"
-          value={formatMXN((stats.grand_tip || 0) + (stats.grand_iva || 0) + (stats.grand_delivery || 0))}
-          sub="propina + IVA + envío"
-          testid="period-kpi-extras"
         />
       </div>
 

@@ -9,7 +9,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { api, formatMXN, PAYMENT_LABELS } from "@/lib/api";
+import { api, formatMXN, PAYMENT_LABELS, newClientId } from "@/lib/api";
+import { enqueueSale, flushQueue, getPendingCount } from "@/lib/salesQueue";
 import { getSession, clearSession } from "@/lib/auth";
 
 const PAYMENTS = ["efectivo", "transferencia", "tarjeta"];
@@ -58,6 +59,35 @@ export default function POS() {
   const [splitAmountA, setSplitAmountA] = useState("");
   const [splitTip, setSplitTip] = useState("");
   const [splitCashReceived, setSplitCashReceived] = useState("");
+
+  // Ventas pendientes de sincronizar (red intermitente)
+  const [pendingCount, setPendingCount] = useState(getPendingCount());
+
+  useEffect(() => {
+    // Al montar y cada 20s intenta drenar la cola de ventas pendientes.
+    let mounted = true;
+    const tryFlush = async () => {
+      if (!navigator.onLine) {
+        if (mounted) setPendingCount(getPendingCount());
+        return;
+      }
+      const { synced, remaining } = await flushQueue();
+      if (!mounted) return;
+      setPendingCount(remaining);
+      if (synced > 0) {
+        toast.success(`Sincronizadas ${synced} venta${synced === 1 ? "" : "s"} pendiente${synced === 1 ? "" : "s"}`);
+      }
+    };
+    tryFlush();
+    const t = setInterval(tryFlush, 20000);
+    const onOnline = () => tryFlush();
+    window.addEventListener("online", onOnline);
+    return () => {
+      mounted = false;
+      clearInterval(t);
+      window.removeEventListener("online", onOnline);
+    };
+  }, []);
 
   useEffect(() => {
     const loadProducts = () =>
@@ -204,7 +234,12 @@ export default function POS() {
       return toast.error("Ingresa el número/mesa");
     }
 
+    // client_id estable para idempotencia. Si la red falla y reintentamos,
+    // el backend reconoce este ID y devuelve la misma venta (no duplica).
+    const clientId = newClientId();
+
     let payload = {
+      client_id: clientId,
       items: lineItems.map(({ product_id, name, price, quantity }) => ({
         product_id,
         name,
@@ -236,7 +271,6 @@ export default function POS() {
       const [methodA, methodB] = splitMethods;
       const tipOnA = methodA === "efectivo" ? 0 : splitTipNum;
       const tipOnB = methodA === "efectivo" ? splitTipNum : 0;
-      // Si ambos digitales (card-transfer), asignamos tip al primero (tarjeta)
       payload = {
         ...payload,
         payment_method: "mixto",
@@ -271,7 +305,11 @@ export default function POS() {
 
     setSubmitting(true);
     try {
-      await api.post("/sales", payload);
+      const res = await api.post("/sales", payload);
+      // Validación dura: solo aceptamos éxito si el backend devolvió un sale.id.
+      if (!res?.data?.id) {
+        throw new Error("Respuesta inválida del servidor (sin id de venta)");
+      }
       let msg = `Venta cobrada ${formatMXN(total)}`;
       if (!splitMode && change > 0) msg += ` · Cambio ${formatMXN(change)}`;
       if (splitMode && splitCashChange > 0)
@@ -279,8 +317,23 @@ export default function POS() {
       toast.success(msg);
       reset();
     } catch (e) {
-      const detail = e?.response?.data?.detail || "Error al guardar la venta";
-      toast.error(typeof detail === "string" ? detail : "Error al guardar la venta");
+      // Fallo de red / timeout / 5xx / respuesta inválida →
+      // encolamos para reintento automático. La idempotencia (client_id) garantiza
+      // que aunque el backend haya guardado y se reintente, no se duplique.
+      const detail = e?.response?.data?.detail;
+      if (typeof detail === "string") {
+        // Error con respuesta del backend (validación). No encolamos: hay que arreglar el carrito.
+        toast.error(`Error: ${detail}`);
+      } else {
+        // Error de red / timeout → encolamos y reseteamos. Se reintenta automático.
+        enqueueSale(payload);
+        setPendingCount(getPendingCount());
+        toast.success(
+          `Venta de ${formatMXN(total)} guardada — se enviará al servidor al volver la red.`,
+          { duration: 6000 }
+        );
+        reset();
+      }
     } finally {
       setSubmitting(false);
     }
@@ -304,6 +357,16 @@ export default function POS() {
             {sucursal || "—"}
           </h1>
         </div>
+        {pendingCount > 0 && (
+          <div
+            data-testid="pending-badge"
+            title="Ventas guardadas en este teléfono esperando volver a tener red"
+            className="mr-2 px-2.5 h-9 rounded-lg bg-amber-500 text-white text-[10px] uppercase tracking-widest font-black flex items-center gap-1.5"
+          >
+            <span className="inline-block w-2 h-2 rounded-full bg-white animate-pulse" />
+            <span>{pendingCount} sin enviar</span>
+          </div>
+        )}
         <button
           data-testid="btn-logout"
           onClick={logout}
