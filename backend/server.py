@@ -1234,6 +1234,19 @@ async def root():
     return {"message": "Tacos POS API", "status": "ok"}
 
 
+@api_router.get("/health")
+async def health():
+    """Endpoint ligero para verificar que el backend Y la base de datos responden.
+    El frontend lo usa para mostrar el indicador de conexión.
+    """
+    try:
+        # Ping a Mongo (1 round-trip) — confirma DB viva, no solo el pod.
+        await db.command("ping")
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"DB unavailable: {e}")
+
+
 # ----------------------------------------------------------------------------
 # App wiring
 # ----------------------------------------------------------------------------

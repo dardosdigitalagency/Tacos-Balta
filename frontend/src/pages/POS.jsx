@@ -9,7 +9,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { api, formatMXN, PAYMENT_LABELS, newClientId } from "@/lib/api";
+import { api, formatMXN, PAYMENT_LABELS, newClientId, pingBackend } from "@/lib/api";
 import { enqueueSale, flushQueue, getPendingCount } from "@/lib/salesQueue";
 import { getSession, clearSession } from "@/lib/auth";
 
@@ -62,6 +62,10 @@ export default function POS() {
 
   // Ventas pendientes de sincronizar (red intermitente)
   const [pendingCount, setPendingCount] = useState(getPendingCount());
+  // Estado de conexión: "online" | "offline" | "checking"
+  const [connStatus, setConnStatus] = useState("checking");
+  // Caché desde localStorage (si el backend está caído, mostramos lo último bueno)
+  const [usingCache, setUsingCache] = useState(false);
 
   useEffect(() => {
     // Al montar y cada 20s intenta drenar la cola de ventas pendientes.
@@ -90,14 +94,49 @@ export default function POS() {
   }, []);
 
   useEffect(() => {
-    const loadProducts = () =>
-      api
-        .get("/products")
-        .then((r) => setProducts(r.data))
-        .catch(() => toast.error("No se pudieron cargar los productos"));
+    // Carga de productos con caché de respaldo:
+    // - Éxito → guarda en localStorage como "última versión buena"
+    // - Falla → si hay caché, la usa; si no, muestra error
+    const PRODUCTS_KEY = "pos_products_cache_v1";
+    const loadProducts = async () => {
+      try {
+        const r = await api.get("/products");
+        setProducts(r.data);
+        setUsingCache(false);
+        setConnStatus("online");
+        try { localStorage.setItem(PRODUCTS_KEY, JSON.stringify(r.data)); } catch { /* quota */ }
+      } catch {
+        setConnStatus("offline");
+        try {
+          const raw = localStorage.getItem(PRODUCTS_KEY);
+          if (raw) {
+            const cached = JSON.parse(raw);
+            setProducts(cached);
+            setUsingCache(true);
+          } else {
+            toast.error("No se pudieron cargar los productos");
+          }
+        } catch {
+          toast.error("No se pudieron cargar los productos");
+        }
+      }
+    };
     loadProducts();
     const t = setInterval(loadProducts, 30000);
     return () => clearInterval(t);
+  }, []);
+
+  // Health check independiente para el indicador de conexión.
+  useEffect(() => {
+    let mounted = true;
+    const check = async () => {
+      const ok = await pingBackend();
+      if (!mounted) return;
+      setConnStatus(ok ? "online" : "offline");
+    };
+    check();
+    const t = setInterval(check, 15000);
+    return () => { mounted = false; clearInterval(t); };
   }, []);
 
   const lineItems = useMemo(() => {
@@ -346,16 +385,35 @@ export default function POS() {
         className="flex items-center justify-between px-4 py-3 bg-white shadow-sm"
         data-testid="pos-header"
       >
-        <div className="min-w-0 flex-1">
-          <p className="text-[10px] uppercase tracking-widest font-bold text-zinc-400 leading-none">
-            {cashier}
-          </p>
-          <h1
-            className="font-display text-xl font-black text-[#006400] leading-tight truncate mt-0.5"
-            data-testid="pos-sucursal"
-          >
-            {sucursal || "—"}
-          </h1>
+        <div className="min-w-0 flex-1 flex items-center gap-2">
+          <span
+            data-testid="conn-indicator"
+            title={
+              connStatus === "online"
+                ? "Conectado al servidor"
+                : connStatus === "offline"
+                ? "Sin conexión — las ventas se guardan local y se envían al volver la red"
+                : "Verificando conexión…"
+            }
+            className={`inline-block w-2.5 h-2.5 rounded-full ${
+              connStatus === "online"
+                ? "bg-emerald-500"
+                : connStatus === "offline"
+                ? "bg-red-500 animate-pulse"
+                : "bg-amber-400 animate-pulse"
+            }`}
+          />
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] uppercase tracking-widest font-bold text-zinc-400 leading-none">
+              {cashier}
+            </p>
+            <h1
+              className="font-display text-xl font-black text-[#006400] leading-tight truncate mt-0.5"
+              data-testid="pos-sucursal"
+            >
+              {sucursal || "—"}
+            </h1>
+          </div>
         </div>
         {pendingCount > 0 && (
           <div
@@ -377,6 +435,14 @@ export default function POS() {
       </header>
 
       {/* Productos */}
+      {usingCache && (
+        <div
+          className="px-4 py-2 bg-amber-50 border-b-2 border-amber-200 text-[11px] uppercase tracking-widest font-black text-amber-900 text-center"
+          data-testid="cache-banner"
+        >
+          ⚠ Sin conexión — productos en caché. Las ventas se guardan localmente.
+        </div>
+      )}
       <main
         className="flex-1 overflow-y-auto px-3 py-2 space-y-1.5"
         data-testid="product-list"
