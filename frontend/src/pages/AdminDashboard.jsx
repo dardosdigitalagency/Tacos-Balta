@@ -45,6 +45,7 @@ export default function AdminDashboard() {
 
   const [stats, setStats] = useState(null);
   const [periodStats, setPeriodStats] = useState(null);
+  const [audit, setAudit] = useState(null);
   const [sales, setSales] = useState([]);
   const [products, setProducts] = useState([]);
   const [users, setUsers] = useState([]);
@@ -77,6 +78,7 @@ export default function AdminDashboard() {
           api.get(`/sales?scope=date&date=${d}&sucursal=${sucursal}&caja=${encodeURIComponent(caja)}`),
           api.get("/products?include_inactive=true"),
           api.get(`/users${passQuery}`),
+          api.get(`/audit/sales_count?date=${d}&sucursal=${sucursal}&caja=${encodeURIComponent(caja)}`),
         ];
         if (tab === "periodo") {
           const periodParams =
@@ -97,7 +99,8 @@ export default function AdminDashboard() {
         setSales(results[1].data);
         setProducts(results[2].data);
         setUsers(results[3].data);
-        if (tab === "periodo" && results[4]) setPeriodStats(results[4].data);
+        setAudit(results[4].data);
+        if (tab === "periodo" && results[5]) setPeriodStats(results[5].data);
         else if (tab === "periodo") setPeriodStats(null);
       } catch {
         /* silent */
@@ -244,7 +247,7 @@ export default function AdminDashboard() {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 pt-5 space-y-5">
-        {tab === "dashboard" && <DashboardTab stats={stats} sucursal={sucursal} />}
+        {tab === "dashboard" && <DashboardTab stats={stats} audit={audit} sucursal={sucursal} />}
         {tab === "periodo" && (
           <PeriodTab
             stats={periodStats}
@@ -347,7 +350,7 @@ function SucursalSelect({ sucursales, value, onChange }) {
 // ----------------------------------------------------------------------------
 // Dashboard Tab
 // ----------------------------------------------------------------------------
-function DashboardTab({ stats, sucursal }) {
+function DashboardTab({ stats, audit, sucursal }) {
   if (!stats) return <div className="text-zinc-500">Cargando…</div>;
 
   const pieData = Object.entries(stats.by_payment).map(([k, v]) => ({

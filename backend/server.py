@@ -504,7 +504,7 @@ async def list_sales(
     if caja and caja != "all":
         q["caja"] = caja
     cursor = db.sales.find(q, {"_id": 0}).sort("created_at", -1)
-    docs = await cursor.to_list(5000)
+    docs = await cursor.to_list(50000)
     # backfill missing fields for legacy docs
     for d in docs:
         d.setdefault("sucursal", "—")
@@ -536,7 +536,7 @@ async def dashboard(
         q["sucursal"] = sucursal
     if caja and caja != "all":
         q["caja"] = caja
-    sales = await db.sales.find(q, {"_id": 0}).to_list(10000)
+    sales = await db.sales.find(q, {"_id": 0}).to_list(50000)
 
     totals = {
         "efectivo":      {"count": 0, "amount": 0.0, "tip": 0.0, "iva": 0.0},
@@ -1238,13 +1238,73 @@ async def root():
 async def health():
     """Endpoint ligero para verificar que el backend Y la base de datos responden.
     El frontend lo usa para mostrar el indicador de conexión.
+    Incluye 'last_sale_at' para detectar silencios sospechosos en el flujo.
     """
     try:
-        # Ping a Mongo (1 round-trip) — confirma DB viva, no solo el pod.
         await db.command("ping")
-        return {"ok": True}
+        # Última venta registrada (cualquier sucursal). Si pasa mucho tiempo
+        # sin ventas en horas pico, puede haber un problema de red en alguna caja.
+        last = await db.sales.find_one({}, sort=[("created_at", -1)], projection={"_id": 0, "created_at": 1})
+        return {
+            "ok": True,
+            "last_sale_at": (last or {}).get("created_at"),
+        }
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"DB unavailable: {e}")
+
+
+@api_router.get("/audit/sales_count")
+async def audit_sales_count(
+    date: Optional[str] = None,
+    sucursal: Optional[str] = None,
+    caja: Optional[str] = None,
+):
+    """Conteo crudo de ventas guardadas para reconciliar con lo físico.
+    Devuelve número exacto + total + breakdown por caja/cajero. Útil para
+    verificar que ninguna venta se 'perdió' bajo carga concurrente.
+    """
+    start_iso, end_iso = date_range_utc(date)
+    q: dict = {"created_at": {"$gte": start_iso, "$lt": end_iso}}
+    if sucursal and sucursal != "all":
+        q["sucursal"] = sucursal
+    if caja and caja != "all":
+        q["caja"] = caja
+    count = await db.sales.count_documents(q)
+    # Top 5 cajeros por # ventas y por total cobrado
+    pipeline = [
+        {"$match": q},
+        {"$group": {
+            "_id": {"caja": "$caja", "cashier": "$cashier"},
+            "count": {"$sum": 1},
+            "total": {"$sum": "$total"},
+            "first": {"$min": "$created_at"},
+            "last": {"$max": "$created_at"},
+        }},
+        {"$sort": {"count": -1}},
+    ]
+    by_cashier = []
+    async for r in db.sales.aggregate(pipeline):
+        by_cashier.append({
+            "caja": r["_id"].get("caja") or "—",
+            "cashier": r["_id"].get("cashier") or "—",
+            "count": r["count"],
+            "total": round(r["total"], 2),
+            "first_at": r["first"],
+            "last_at": r["last"],
+        })
+    grand = await db.sales.aggregate([
+        {"$match": q},
+        {"$group": {"_id": None, "total": {"$sum": "$total"}}},
+    ]).to_list(1)
+    grand_total = round((grand[0] if grand else {}).get("total", 0), 2)
+    return {
+        "date": date or "today",
+        "sucursal": sucursal or "all",
+        "caja": caja or "all",
+        "sales_count": count,
+        "grand_total": grand_total,
+        "by_cashier": by_cashier,
+    }
 
 
 # ----------------------------------------------------------------------------
@@ -1265,14 +1325,23 @@ async def on_startup():
     await seed_sucursales_if_empty()
     await seed_products_if_empty()
     await seed_users_if_empty()
-    # Índice único parcial para idempotencia de ventas (ignora docs sin client_id)
+
+    # ----------- Índices críticos para performance bajo carga concurrente -----------
+    # Sin estos índices, queries del dashboard escanean toda la colección y se
+    # vuelven lentas a partir de ~5k ventas → potenciales timeouts en horas pico.
     try:
+        # Idempotencia (parcial: solo docs con client_id string)
         await db.sales.create_index(
             "client_id", unique=True,
             partialFilterExpression={"client_id": {"$type": "string"}},
         )
+        # Filtro por fecha (queries del POS y dashboard)
+        await db.sales.create_index([("created_at", -1)])
+        # Filtros compuestos: sucursal + fecha, caja + fecha
+        await db.sales.create_index([("sucursal", 1), ("created_at", -1)])
+        await db.sales.create_index([("caja", 1), ("created_at", -1)])
     except Exception as e:
-        print(f"[startup] WARN no se pudo crear índice client_id: {e}")
+        print(f"[startup] WARN índices: {e}")
 
 
 @app.on_event("shutdown")
