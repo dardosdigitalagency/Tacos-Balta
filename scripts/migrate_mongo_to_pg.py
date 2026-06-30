@@ -48,7 +48,9 @@ async def main():
     mdb = mclient[db_name]
 
     print("→ Conectando a Postgres…")
-    pool = await asyncpg.create_pool(pg_url, min_size=1, max_size=4, timeout=20)
+    # statement_cache_size=0 es REQUERIDO para Supabase Transaction Pooler (pgbouncer).
+    pool = await asyncpg.create_pool(pg_url, min_size=1, max_size=4, timeout=20,
+                                     statement_cache_size=0)
 
     async with pool.acquire() as c:
         # Aplicar schema si no existe (idempotente)

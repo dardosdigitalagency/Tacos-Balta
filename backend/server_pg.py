@@ -1228,7 +1228,8 @@ app.add_middleware(
 async def on_startup():
     global pool
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=20,
-                                     command_timeout=30, timeout=15)
+                                     command_timeout=30, timeout=15,
+                                     statement_cache_size=0)
     # Crear schema si no existe (idempotente)
     schema_path = ROOT_DIR / "schema.sql"
     if schema_path.exists():
