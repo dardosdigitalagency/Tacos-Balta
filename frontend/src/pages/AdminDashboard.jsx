@@ -374,6 +374,9 @@ function DashboardTab({ stats, audit, sucursal }) {
 
   return (
     <div className="space-y-5" data-testid="dashboard-tab">
+      {/* Panel de auditoría: conteo crudo de ventas + última venta + por cajero */}
+      {audit && <AuditPanel audit={audit} />}
+
       {/* KPIs principales: lo esencial para arqueo */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         <KpiCard label="Total cobrado" value={formatMXN(stats.grand_total)} testid="kpi-total" primary />
@@ -1577,5 +1580,137 @@ function HighlightCard({ label, value, sub, testid, color }) {
       </p>
       {sub && <p className="text-sm text-zinc-600 mt-1">{sub}</p>}
     </div>
+  );
+}
+
+
+// ----------------------------------------------------------------------------
+// AuditPanel — verificación cruda de ventas registradas, con desglose por
+// cajero (caja + cashier) y "última venta hace X". Sirve para reconciliar
+// contra el arqueo físico y detectar silencios sospechosos en alguna caja.
+// ----------------------------------------------------------------------------
+function AuditPanel({ audit }) {
+  const lastSale = audit.by_cashier
+    .map((c) => c.last_at)
+    .filter(Boolean)
+    .sort()
+    .reverse()[0];
+
+  const minutesSince = (iso) => {
+    if (!iso) return null;
+    const diffMs = Date.now() - new Date(iso).getTime();
+    return Math.max(0, Math.floor(diffMs / 60000));
+  };
+  const lastMin = minutesSince(lastSale);
+  // Si han pasado > 60 min desde la última venta en horario laboral, alerta.
+  const isStale = lastMin !== null && lastMin > 60;
+
+  return (
+    <section
+      data-testid="audit-panel"
+      className="bg-white border-2 border-zinc-100 rounded-md p-3 sm:p-4"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <div>
+          <h3 className="text-[10px] uppercase tracking-widest font-black text-zinc-500">
+            Auditoría · conteo crudo de ventas
+          </h3>
+          <p className="text-xs text-zinc-500 mt-0.5">
+            Compara estos números contra tu arqueo físico para detectar diferencias.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 text-[11px] uppercase tracking-widest font-black">
+          <span
+            data-testid="audit-last-sale"
+            className={`px-2.5 py-1.5 rounded-md ${
+              isStale
+                ? "bg-red-50 text-red-700 border border-red-200"
+                : "bg-emerald-50 text-emerald-800 border border-emerald-200"
+            }`}
+          >
+            <span className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle"
+                  style={{ background: isStale ? "#dc2626" : "#10b981" }} />
+            Última venta:{" "}
+            {lastMin === null
+              ? "—"
+              : lastMin === 0
+              ? "hace < 1 min"
+              : `hace ${lastMin} min`}
+          </span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+        <div className="bg-zinc-50 rounded-md p-2.5">
+          <p className="text-[10px] uppercase tracking-widest font-black text-zinc-500">
+            Ventas registradas
+          </p>
+          <p
+            className="font-display text-2xl sm:text-3xl font-black text-[#006400] mt-0.5"
+            data-testid="audit-sales-count"
+          >
+            {audit.sales_count}
+          </p>
+        </div>
+        <div className="bg-zinc-50 rounded-md p-2.5">
+          <p className="text-[10px] uppercase tracking-widest font-black text-zinc-500">
+            Total cobrado
+          </p>
+          <p
+            className="font-display text-2xl sm:text-3xl font-black text-[#006400] mt-0.5"
+            data-testid="audit-grand-total"
+          >
+            {formatMXN(audit.grand_total)}
+          </p>
+        </div>
+        <div className="bg-zinc-50 rounded-md p-2.5">
+          <p className="text-[10px] uppercase tracking-widest font-black text-zinc-500">
+            Cajeros activos
+          </p>
+          <p className="font-display text-2xl sm:text-3xl font-black text-[#006400] mt-0.5">
+            {audit.by_cashier.length}
+          </p>
+        </div>
+        <div className="bg-zinc-50 rounded-md p-2.5">
+          <p className="text-[10px] uppercase tracking-widest font-black text-zinc-500">
+            Fecha
+          </p>
+          <p className="text-base font-black text-zinc-900 mt-0.5">{audit.date}</p>
+        </div>
+      </div>
+
+      {audit.by_cashier.length > 0 && (
+        <div className="overflow-x-auto" data-testid="audit-by-cashier">
+          <table className="w-full text-xs sm:text-sm">
+            <thead className="bg-zinc-50">
+              <tr className="text-left">
+                <th className="px-2.5 py-1.5 text-[10px] uppercase tracking-widest font-black text-zinc-500">Caja</th>
+                <th className="px-2.5 py-1.5 text-[10px] uppercase tracking-widest font-black text-zinc-500">Cajero</th>
+                <th className="px-2.5 py-1.5 text-[10px] uppercase tracking-widest font-black text-zinc-500"># Ventas</th>
+                <th className="px-2.5 py-1.5 text-[10px] uppercase tracking-widest font-black text-zinc-500">Total</th>
+                <th className="px-2.5 py-1.5 text-[10px] uppercase tracking-widest font-black text-zinc-500">Primera</th>
+                <th className="px-2.5 py-1.5 text-[10px] uppercase tracking-widest font-black text-zinc-500">Última</th>
+              </tr>
+            </thead>
+            <tbody>
+              {audit.by_cashier.map((c, i) => (
+                <tr
+                  key={`${c.caja}-${c.cashier}-${i}`}
+                  data-testid={`audit-row-${i}`}
+                  className="border-t border-zinc-100"
+                >
+                  <td className="px-2.5 py-1.5 font-black">{c.caja}</td>
+                  <td className="px-2.5 py-1.5">{c.cashier}</td>
+                  <td className="px-2.5 py-1.5 font-black">{c.count}</td>
+                  <td className="px-2.5 py-1.5 font-black">{formatMXN(c.total)}</td>
+                  <td className="px-2.5 py-1.5 text-zinc-500">{fmtTime(c.first_at)}</td>
+                  <td className="px-2.5 py-1.5 text-zinc-500">{fmtTime(c.last_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }
