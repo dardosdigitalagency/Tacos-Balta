@@ -55,9 +55,32 @@ Sistema POS mobile-first para taquería con:
 - **3ª opción de pago dividido — Tarjeta + Transferencia**: ahora hay 3 splits posibles (efectivo+tarjeta, efectivo+transferencia, tarjeta+transferencia). Backend valida que `sum(payment.amount) == total` (incluye tip+iva+envío).
 - **Custom Date Range en Admin → Período**: botón "Personalizado" en el toggle. Aparecen 2 date pickers (Desde/Hasta) y pasa `period=custom&start_date&end_date` al endpoint. CSV también soporta rango personalizado.
 
+## Iteración 7 (Feb 2026) — Sync sucursal en vivo · Audit histórico · Cola offline robusta
+
+**Bugs fix:**
+- **Suma incorrecta en dispositivo específico**: identificado como bundle JS cacheado en el celular. Fixes:
+  - `no-cache` meta tags en `index.html`
+  - Botón visible **"Actualizar app"** (`btn-refresh-app`) en el header del POS: limpia `localStorage` (preservando cola de ventas y sesión), borra `Cache Storage` y recarga con `?_v=<ts>` para bust HTTP cache.
+  - Poda automática del carrito cuando el catálogo de productos cambia (evita IDs huérfanos que generarían "totales fantasma").
+- **Cajero ve sucursal vieja tras cambio del admin**: nuevo endpoint `GET /api/auth/me?username=X`. El POS lo llama al montar, cada 60s y al volver a visible. Si detecta cambio en `sucursal`/`caja_name`, muestra toast **"Tu sucursal cambió a: X"**, actualiza sesión y recarga.
+- **Admin ve cajeros de HOY al revisar AYER**: `/api/audit/sales_count` ahora agrega por `caja + cashier + sucursal`. El dropdown de Caja en Admin usa la **unión** de: (a) cajas con ventas históricas ese día en esa sucursal, (b) cajeros actualmente asignados. La tabla de auditoría ahora muestra la columna **Sucursal** (histórica, tomada de la venta al momento en que ocurrió).
+
+**Cola offline v2** (`salesQueue.js` reescrito):
+- Backoff exponencial **por venta**: 5s → 10s → 20s → 40s → 60s → 2min → cap 5min. Cada item guarda `next_try_at`, `attempts` y `last_error`.
+- Concurrency guard: solo un `flushQueue()` corre a la vez (evita saturar la red).
+- Auto-flush en múltiples eventos: intervalo 10s, `online`, `visibilitychange` (tab activa).
+- Errores `4xx` (excepto 429) marcan la venta como `hard_error` (no reintentos infinitos, la conserva visible para inspección).
+- Fallo de `localStorage` (cuota): copia de emergencia a `window._emergencySales` para no perder datos.
+- **Nuevo modal "Ventas guardadas"** (`pending-modal`): tocando el badge amarillo, el cajero ve la lista de ventas encoladas con monto, hora, intentos, último error. Botón "Reintentar ahora".
+
+**Testing (iter 6):** 6/6 backend pytest + 100% flows frontend verificados.
+
 ## Backlog / Próximas mejoras
-- P1: Cierre de caja y arqueo
-- P2: Múltiples cajeros con sesión por usuario, historial por persona
+- P1: Cierre de caja y arqueo (día/turno)
+- P1: Auth token en `/api/auth/me` (hoy es público — ver comentario del testing agent)
+- P2: Validar `cashier.sucursal == body.sucursal` en `POST /sales`
+- P2: Hash de contraseñas (siguen en texto plano)
 - P2: Cancelación / devolución de ventas
-- P2: Notas por venta, comentarios al cocinero, ticket imprimible
-- P2: Refactor de `POS.jsx` y `AdminDashboard.jsx` (>1000 líneas c/u) en componentes más chicos
+- P2: Notas por venta y ticket imprimible
+- P3: Refactor de `POS.jsx` y `AdminDashboard.jsx` en componentes más chicos
+- P3: Migrar `@app.on_event` a `lifespan` handlers (deprecated en FastAPI)
