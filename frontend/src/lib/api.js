@@ -51,6 +51,22 @@ export const pingBackend = async () => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// fetchMe: obtiene datos frescos del usuario. El POS lo usa para detectar
+// cuando el admin cambia la sucursal/caja del cajero sin obligar a re-login.
+// Devuelve null si el usuario ya no existe o está inactivo.
+// ---------------------------------------------------------------------------
+export const fetchMe = async (username) => {
+  if (!username) return null;
+  try {
+    const cfg = { __retryCount: MAX_RETRIES, timeout: 8000 };
+    const { data } = await api.get(`/auth/me?username=${encodeURIComponent(username)}`, cfg);
+    return data || null;
+  } catch {
+    return null;
+  }
+};
+
 export const formatMXN = (n) =>
   new Intl.NumberFormat("es-MX", {
     style: "currency",

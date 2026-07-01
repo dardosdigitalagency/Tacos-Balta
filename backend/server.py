@@ -1096,6 +1096,24 @@ async def admin_login(body: LoginRequest):
     return res
 
 
+@api_router.get("/auth/me")
+async def auth_me(username: str):
+    """Devuelve datos frescos del usuario. Se usa en el POS para detectar
+    cambios de sucursal/caja hechos por el admin sin que el cajero tenga que
+    cerrar sesión. El frontend lo llama cada ~60s.
+    """
+    user = await db.users.find_one(
+        {"username": username, "active": True},
+        {"_id": 0, "password": 0},
+    )
+    if not user:
+        # Fallback para admin sembrado por env (por si aún no está en DB)
+        if username == ADMIN_USERNAME:
+            return {"username": ADMIN_USERNAME, "role": "admin", "sucursal": None, "caja_name": "Admin"}
+        raise HTTPException(status_code=404, detail="Usuario no encontrado o inactivo")
+    return user
+
+
 @api_router.get("/sucursales")
 async def list_sucursales():
     docs = await db.sucursales.find({}, {"_id": 0}).sort("sort_order", 1).to_list(200)
@@ -1274,7 +1292,7 @@ async def audit_sales_count(
     pipeline = [
         {"$match": q},
         {"$group": {
-            "_id": {"caja": "$caja", "cashier": "$cashier"},
+            "_id": {"caja": "$caja", "cashier": "$cashier", "sucursal": "$sucursal"},
             "count": {"$sum": 1},
             "total": {"$sum": "$total"},
             "first": {"$min": "$created_at"},
@@ -1287,6 +1305,7 @@ async def audit_sales_count(
         by_cashier.append({
             "caja": r["_id"].get("caja") or "—",
             "cashier": r["_id"].get("cashier") or "—",
+            "sucursal": r["_id"].get("sucursal") or "—",
             "count": r["count"],
             "total": round(r["total"], 2),
             "first_at": r["first"],

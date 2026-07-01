@@ -9,9 +9,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { api, formatMXN, PAYMENT_LABELS, newClientId, pingBackend } from "@/lib/api";
-import { enqueueSale, flushQueue, getPendingCount } from "@/lib/salesQueue";
-import { getSession, clearSession } from "@/lib/auth";
+import { api, formatMXN, PAYMENT_LABELS, newClientId, pingBackend, fetchMe } from "@/lib/api";
+import {
+  enqueueSale,
+  flushQueue,
+  getPendingCount,
+  getQueueDetails,
+  startAutoFlush,
+} from "@/lib/salesQueue";
+import { getSession, setSession, clearSession } from "@/lib/auth";
 
 const PAYMENTS = ["efectivo", "transferencia", "tarjeta"];
 const ORDER_TYPES = [
@@ -62,36 +68,61 @@ export default function POS() {
 
   // Ventas pendientes de sincronizar (red intermitente)
   const [pendingCount, setPendingCount] = useState(getPendingCount());
+  const [showPending, setShowPending] = useState(false);
   // Estado de conexión: "online" | "offline" | "checking"
   const [connStatus, setConnStatus] = useState("checking");
   // Caché desde localStorage (si el backend está caído, mostramos lo último bueno)
   const [usingCache, setUsingCache] = useState(false);
 
   useEffect(() => {
-    // Al montar y cada 20s intenta drenar la cola de ventas pendientes.
-    let mounted = true;
-    const tryFlush = async () => {
-      if (!navigator.onLine) {
-        if (mounted) setPendingCount(getPendingCount());
-        return;
-      }
-      const { synced, remaining } = await flushQueue();
-      if (!mounted) return;
-      setPendingCount(remaining);
+    // Cola de ventas pendientes: reintentos automáticos con backoff, online, visibility.
+    const stop = startAutoFlush(({ pending, synced }) => {
+      setPendingCount(pending);
       if (synced > 0) {
         toast.success(`Sincronizadas ${synced} venta${synced === 1 ? "" : "s"} pendiente${synced === 1 ? "" : "s"}`);
       }
+    });
+    return stop;
+  }, []);
+
+  // Refresco periódico del usuario: si el admin cambia la sucursal/caja del cajero,
+  // el POS se entera sin necesidad de re-login (cada 60s + al montar + al volver a visible).
+  useEffect(() => {
+    if (!cashier) return;
+    let mounted = true;
+    const syncUser = async () => {
+      const fresh = await fetchMe(cashier);
+      if (!mounted || !fresh) return;
+      const s = getSession();
+      if (!s?.user) return;
+      const oldSuc = s.user.sucursal;
+      const oldCaja = s.user.caja_name;
+      const newSuc = fresh.sucursal ?? null;
+      const newCaja = fresh.caja_name ?? "Caja 1";
+      const changed = oldSuc !== newSuc || oldCaja !== newCaja;
+      if (!changed) return;
+      // Guardamos sesión actualizada y avisamos al cajero.
+      setSession({ ...s, user: { ...s.user, ...fresh } });
+      if (oldSuc !== newSuc) {
+        toast.info(`Tu sucursal cambió a: ${newSuc || "—"}`, { duration: 6000 });
+      }
+      if (oldCaja !== newCaja && oldSuc === newSuc) {
+        toast.info(`Tu caja cambió a: ${newCaja}`, { duration: 6000 });
+      }
+      // Recargamos para que TODA la UI (header, envío al backend, filtros) tome
+      // los nuevos valores desde la fuente única (session).
+      setTimeout(() => window.location.reload(), 800);
     };
-    tryFlush();
-    const t = setInterval(tryFlush, 20000);
-    const onOnline = () => tryFlush();
-    window.addEventListener("online", onOnline);
+    syncUser();
+    const t = setInterval(syncUser, 60_000);
+    const onVisible = () => { if (document.visibilityState === "visible") syncUser(); };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       mounted = false;
       clearInterval(t);
-      window.removeEventListener("online", onOnline);
+      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, []);
+  }, [cashier]);
 
   useEffect(() => {
     // Carga de productos con caché de respaldo:
@@ -105,6 +136,25 @@ export default function POS() {
         setUsingCache(false);
         setConnStatus("online");
         try { localStorage.setItem(PRODUCTS_KEY, JSON.stringify(r.data)); } catch { /* quota */ }
+        // Limpia el carrito de IDs de productos que ya no existen (renombrados
+        // o borrados por el admin). Evita "totales fantasma" que no se ven
+        // en los contadores pero sí en el total.
+        const validIds = new Set(r.data.map((p) => p.id));
+        setCart((c) => {
+          const cleaned = {};
+          let dropped = 0;
+          for (const [pid, qty] of Object.entries(c || {})) {
+            if (validIds.has(pid) && Number(qty) > 0) cleaned[pid] = qty;
+            else if (Number(qty) > 0) dropped += 1;
+          }
+          if (dropped > 0) {
+            toast.warning(
+              `Se limpiaron ${dropped} producto(s) obsoletos del carrito`,
+              { duration: 4000 },
+            );
+          }
+          return cleaned;
+        });
       } catch {
         setConnStatus("offline");
         try {
@@ -244,6 +294,27 @@ export default function POS() {
   const logout = () => {
     clearSession();
     navigate("/", { replace: true });
+  };
+
+  // Refresh duro: limpia todos los cachés del navegador y recarga desde
+  // servidor. Útil cuando un dispositivo se quedó con un bundle viejo o el
+  // carrito quedó en un estado raro. NO borra la cola de ventas pendientes.
+  const hardRefresh = async () => {
+    try {
+      // Preservar la cola de ventas y la sesión — el resto se limpia.
+      const queueBackup = localStorage.getItem("pos_pending_sales_v1");
+      const sessionBackup = localStorage.getItem("tacos_session");
+      localStorage.clear();
+      if (queueBackup) localStorage.setItem("pos_pending_sales_v1", queueBackup);
+      if (sessionBackup) localStorage.setItem("tacos_session", sessionBackup);
+      if ("caches" in window) {
+        const names = await caches.keys();
+        await Promise.all(names.map((n) => caches.delete(n)));
+      }
+    } catch { /* ignore */ }
+    // Bust con timestamp para forzar bypass de caché HTTP
+    const bust = `?_v=${Date.now()}`;
+    window.location.replace(window.location.pathname + bust);
   };
 
   const reset = () => {
@@ -416,15 +487,26 @@ export default function POS() {
           </div>
         </div>
         {pendingCount > 0 && (
-          <div
+          <button
             data-testid="pending-badge"
-            title="Ventas guardadas en este teléfono esperando volver a tener red"
-            className="mr-2 px-2.5 h-9 rounded-lg bg-amber-500 text-white text-[10px] uppercase tracking-widest font-black flex items-center gap-1.5"
+            onClick={() => setShowPending(true)}
+            title="Ver detalle de ventas guardadas localmente"
+            className="mr-2 px-2.5 h-9 rounded-lg bg-amber-500 text-white text-[10px] uppercase tracking-widest font-black flex items-center gap-1.5 active:bg-amber-600 tap-scale"
           >
             <span className="inline-block w-2 h-2 rounded-full bg-white animate-pulse" />
             <span>{pendingCount} sin enviar</span>
-          </div>
+          </button>
         )}
+        <button
+          data-testid="btn-refresh-app"
+          onClick={hardRefresh}
+          title="Actualizar la app (limpia caché del navegador)"
+          className="h-10 w-10 mr-1 flex items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-100 active:bg-zinc-200 tap-scale transition-colors"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v6h6M20 20v-6h-6M4 10a8 8 0 0114.93-3M20 14a8 8 0 01-14.93 3" />
+          </svg>
+        </button>
         <button
           data-testid="btn-logout"
           onClick={logout}
@@ -550,6 +632,13 @@ export default function POS() {
         showDetail={showDetail}
         setShowDetail={setShowDetail}
       />
+
+      {showPending && (
+        <PendingSalesModal
+          onClose={() => setShowPending(false)}
+          onRefresh={() => setPendingCount(getPendingCount())}
+        />
+      )}
     </div>
   );
 }
@@ -1141,3 +1230,129 @@ function CartPanel({
     </section>
   );
 }
+
+// ----------------------------------------------------------------------------
+// PendingSalesModal – lista de ventas guardadas localmente esperando red.
+// Permite al cajero VER que sus ventas están seguras aunque no se hayan enviado
+// aún, y forzar un reintento inmediato.
+// ----------------------------------------------------------------------------
+
+function PendingSalesModal({ onClose, onRefresh }) {
+  const [items, setItems] = useState(() => getQueueDetails());
+  const [busy, setBusy] = useState(false);
+
+  const reload = () => {
+    setItems(getQueueDetails());
+    onRefresh?.();
+  };
+
+  const retryNow = async () => {
+    setBusy(true);
+    try {
+      const { synced, remaining } = await flushQueue();
+      reload();
+      if (synced > 0) {
+        toast.success(`Sincronizadas ${synced} venta${synced === 1 ? "" : "s"}. Quedan ${remaining}.`);
+      } else if (remaining > 0) {
+        toast.error(`Sin conexión al servidor. ${remaining} venta${remaining === 1 ? " sigue" : "s siguen"} pendiente${remaining === 1 ? "" : "s"}.`);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const fmt = (iso) => {
+    if (!iso) return "—";
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString("es-MX", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short" });
+    } catch { return iso; }
+  };
+
+  return (
+    <div
+      data-testid="pending-modal"
+      className="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center p-3"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-t-2xl sm:rounded-2xl w-full max-w-md max-h-[85vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="sticky top-0 bg-white border-b border-zinc-100 px-4 py-3 flex items-center justify-between">
+          <div>
+            <h3 className="font-display text-lg font-black text-[#006400]">Ventas guardadas</h3>
+            <p className="text-[11px] text-zinc-500 mt-0.5">
+              {items.length === 0 ? "Ninguna pendiente" : `${items.length} esperando enviarse`}
+            </p>
+          </div>
+          <button
+            data-testid="pending-close"
+            onClick={onClose}
+            className="w-9 h-9 rounded-lg text-zinc-500 hover:bg-zinc-100 active:bg-zinc-200 text-xl font-black"
+          >
+            ×
+          </button>
+        </div>
+
+        {items.length === 0 ? (
+          <div className="p-6 text-center text-zinc-500 text-sm">
+            No hay ventas pendientes. Todo sincronizado ✓
+          </div>
+        ) : (
+          <>
+            <div className="px-3 py-2 bg-amber-50 border-b border-amber-100 text-[11px] text-amber-900">
+              Estas ventas ya están cobradas y guardadas en este dispositivo.
+              Se reintentarán automáticamente cuando vuelva la red.
+            </div>
+            <ul className="divide-y divide-zinc-100">
+              {items.map((it, i) => (
+                <li key={it.client_id || i} className="px-4 py-3" data-testid={`pending-row-${i}`}>
+                  <div className="flex items-center justify-between">
+                    <span className="font-display text-lg font-black text-zinc-900">
+                      {formatMXN(it.total)}
+                    </span>
+                    <span className="text-[10px] uppercase tracking-widest font-black text-zinc-400">
+                      {fmt(it.queued_at)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between mt-1">
+                    <span className="text-xs text-zinc-500">
+                      {it.sucursal} · {it.cashier}
+                    </span>
+                    <span className={`text-[10px] uppercase tracking-widest font-black ${
+                      it.attempts > 3 ? "text-red-700" : "text-amber-700"
+                    }`}>
+                      {it.attempts} intento{it.attempts === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  {it.last_error && (
+                    <p className="text-[11px] text-red-700 mt-1 font-mono">{it.last_error}</p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+
+        <div className="sticky bottom-0 bg-white border-t border-zinc-100 p-3 flex gap-2">
+          <button
+            data-testid="pending-retry-now"
+            onClick={retryNow}
+            disabled={busy || items.length === 0}
+            className="flex-1 h-11 rounded-lg bg-[#006400] text-white font-black text-sm uppercase tracking-widest disabled:bg-zinc-200 disabled:text-zinc-400 tap-scale"
+          >
+            {busy ? "Enviando…" : "Reintentar ahora"}
+          </button>
+          <button
+            onClick={onClose}
+            className="h-11 px-4 rounded-lg bg-zinc-100 text-zinc-700 font-black text-sm uppercase tracking-widest tap-scale"
+          >
+            Cerrar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+

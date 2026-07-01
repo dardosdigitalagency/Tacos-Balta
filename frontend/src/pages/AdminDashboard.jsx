@@ -50,15 +50,28 @@ export default function AdminDashboard() {
   const [products, setProducts] = useState([]);
   const [users, setUsers] = useState([]);
   const [showPasswords, setShowPasswords] = useState(false);
+  // Cajas históricas: la lista real de cajas que tuvieron ventas en la fecha
+  // y sucursal seleccionadas. Se usa para el dropdown de "Caja" para que
+  // refleje quién trabajó ESA FECHA (no las asignaciones actuales del admin).
+  const [historicalCashiers, setHistoricalCashiers] = useState([]);
 
-  // cajas disponibles = lista única de caja_name de usuarios cashier en esa sucursal
+  // cajas disponibles: UNIÓN de (cajas con ventas históricas ese día en esa
+  // sucursal) + (cajeros actualmente asignados a la sucursal). Así el admin
+  // ve el histórico verdadero al revisar días pasados, y también ve cajas
+  // recién asignadas que aún no venden hoy.
   const availableCajas = useMemo(() => {
     if (sucursal === "all") return [];
-    const set = new Set(
-      users.filter((u) => u.role === "cashier" && u.sucursal === sucursal).map((u) => u.caja_name).filter(Boolean)
-    );
-    return Array.from(set);
-  }, [sucursal, users]);
+    const set = new Set();
+    // 1) Históricas (verdad para fechas pasadas)
+    historicalCashiers
+      .filter((c) => c.sucursal === sucursal && c.caja && c.caja !== "—")
+      .forEach((c) => set.add(c.caja));
+    // 2) Actuales (para cajeros nuevos que aún no venden)
+    users
+      .filter((u) => u.role === "cashier" && u.sucursal === sucursal && u.caja_name)
+      .forEach((u) => set.add(u.caja_name));
+    return Array.from(set).sort();
+  }, [sucursal, users, historicalCashiers]);
 
   useEffect(() => {
     api.get("/sucursales").then((r) => {
@@ -66,6 +79,26 @@ export default function AdminDashboard() {
       setSucursalItems(r.data.items || []);
     });
   }, []);
+
+  // Cajas históricas de la fecha seleccionada (independiente del filtro de
+  // caja). Necesario para que el dropdown de "Caja" refleje QUIÉN TRABAJÓ ese
+  // día en esa sucursal, incluso si hoy ya no está asignado ahí.
+  useEffect(() => {
+    let cancelled = false;
+    const fetchHist = async () => {
+      const d = fmtDateAPI(date);
+      try {
+        // Nota: pasamos caja=all porque queremos TODAS las cajas del día,
+        // no solo la seleccionada.
+        const r = await api.get(`/audit/sales_count?date=${d}&caja=all`);
+        if (!cancelled) setHistoricalCashiers(r.data.by_cashier || []);
+      } catch {
+        if (!cancelled) setHistoricalCashiers([]);
+      }
+    };
+    fetchHist();
+    return () => { cancelled = true; };
+  }, [date]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1684,6 +1717,7 @@ function AuditPanel({ audit }) {
           <table className="w-full text-xs sm:text-sm">
             <thead className="bg-zinc-50">
               <tr className="text-left">
+                <th className="px-2.5 py-1.5 text-[10px] uppercase tracking-widest font-black text-zinc-500">Sucursal</th>
                 <th className="px-2.5 py-1.5 text-[10px] uppercase tracking-widest font-black text-zinc-500">Caja</th>
                 <th className="px-2.5 py-1.5 text-[10px] uppercase tracking-widest font-black text-zinc-500">Cajero</th>
                 <th className="px-2.5 py-1.5 text-[10px] uppercase tracking-widest font-black text-zinc-500"># Ventas</th>
@@ -1695,10 +1729,11 @@ function AuditPanel({ audit }) {
             <tbody>
               {audit.by_cashier.map((c, i) => (
                 <tr
-                  key={`${c.caja}-${c.cashier}-${i}`}
+                  key={`${c.sucursal}-${c.caja}-${c.cashier}-${i}`}
                   data-testid={`audit-row-${i}`}
                   className="border-t border-zinc-100"
                 >
+                  <td className="px-2.5 py-1.5 text-zinc-700">{c.sucursal || "—"}</td>
                   <td className="px-2.5 py-1.5 font-black">{c.caja}</td>
                   <td className="px-2.5 py-1.5">{c.cashier}</td>
                   <td className="px-2.5 py-1.5 font-black">{c.count}</td>

@@ -1,0 +1,35 @@
+{
+  "summary": "Iteration 6 verification of 3 bug fixes (stale bundle/cart sync, sucursal change reflection via /auth/me, audit historical cashiers with sucursal). Backend 6/6 PASS (pytest test_iteration6.py): /api/auth/me returns fresh user data for san_vicente + admin fallback + 404 for unknown; POST /api/sales idempotent via client_id (3 duplicate posts -> same id); GET /api/audit/sales_count includes 'sucursal' in every by_cashier row (verified 2 sales in San Vicente + Valle Dorado both appear correctly); PUT /api/users/{id} sucursal change instantly reflected on /auth/me. Frontend POS (390x844) all PASS: san_vicente login shows header 'San Vicente', btn-refresh-app visible, conn-indicator eventually bg-emerald-500 (~2s after health check); 5 rapid btn-inc clicks -> qty-display=5 and cart-total=$150 (stale-closure bug remains fixed); llevar+efectivo charge submits, cart resets to $0, toast 'Venta cobrada $150' appears. Frontend Admin (1440x900) all PASS: admin login lands on /admin, sucursal-filter visible; audit-panel shows headers ['Sucursal','Caja','Cajero','# Ventas','Total','Primera','Última'] with rows populated (San Vicente/Caja 1/san_vicente $210, San Vicente/Caja 1/nancy $90 [historical cashier], Valle Dorado/Caja 1/valle_dorado $30, Valle Dorado/Caja 1/karla $150 [historical]). After clicking sucursal 'San Vicente', caja-filter renders with options 'Todas' + 'Caja 1'. Note: caja-filter element is only mounted when a specific sucursal is selected (not when 'all'); with 'Todas' selected the audit still shows all sucursales, which is correct.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "POS cart panel", "issues": ["cart-subtotal element is conditionally rendered (only when tip/IVA present); with plain items only cart-total is shown. Behavior is consistent with the spec (subtotal == total when no adjustments), but tests must guard for missing selector."]},
+      {"screen": "Admin filters", "issues": ["caja-filter is only rendered when a specific sucursal is selected. That is fine functionally, but the task testid list implies it should always be present. Consider mounting it (disabled) when sucursal='all' for clearer UX."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration6.py",
+    "/app/test_reports/pytest/iteration6_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py /auth/me has no auth token / rate limiting — anyone with the public URL can enumerate usernames (though only returns 404 for invalid). Consider requiring the session token from login.",
+    "AdminDashboard.jsx and POS.jsx are large single files (>1300 and >1300 lines respectively). Split by concern (audit-panel, cart-panel, split-payments, pending-modal) for maintainability.",
+    "/api/sales POST still does not enforce cashier.sucursal == body.sucursal (carry-over from iter-5). A misbehaving/hacked frontend could log a sale against a different sucursal.",
+    "Idempotency index uses partialFilterExpression on client_id string — good. But no unit test today verifies concurrent duplicate posts race under load; consider a stress test.",
+    "Passwords still plaintext (carry-over).",
+    "@app.on_event('startup')/'shutdown') still deprecated in favor of lifespan handlers (carry-over)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration6.py"
+  ],
+  "success_rate": {"backend": "100% (6/6 pytest)", "frontend": "100% of tested flows"},
+  "test_credentials": "admin/taco123, san_vicente/vicente123, valle_dorado/valle123 (all in DB seed, unchanged)",
+  "seed_data_creation": "test_iteration6.py creates two idempotent audit sales (TEST_audit_sv_*, TEST_audit_vd_*) and one idempotent test sale (TEST_cid_*) each run; also creates+deletes a TEST_sw_* user for sucursal-change test. Frontend flow left 3 real san_vicente Tacos x5 llevar sales ($150 each = $450 for today) on Caja 1. Pre-existing 'nancy' ($90 San Vicente) and 'karla' ($150 Valle Dorado) sales from prior sessions are visible in audit panel and helpfully demonstrate historical-cashier behaviour.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend suites test_iteration6.py (new fixes) + test_iteration5.py (pricing_mode/mixto) + test_iteration4.py (sucursales) + backend_test.py (users/orders/dashboard) can all be run together: `export $(grep -v '^#' /app/frontend/.env | xargs) && pytest /app/backend/tests/ -v`. Key testids for iteration-6 fixes: pos-sucursal, conn-indicator (bg-emerald-500 when healthy, bg-amber-400 while pending), btn-refresh-app, pending-badge, pending-modal, pending-retry-now, audit-panel, audit-by-cashier headers include 'Sucursal' as the FIRST column. Note caja-filter is only in the DOM after a sucursal is picked (not on 'Todas'). POS cart-subtotal is only rendered when there's tip/IVA/delivery > 0; use cart-total for the plain case.",
+  "rca_of_the_issue": "N/A — all 3 reported bugs verified fixed: (1) cart-sync (5 rapid clicks -> qty=5, total=$150) reproduces cleanly; (2) /auth/me returns updated sucursal immediately after PUT /users; (3) audit_sales_count by_cashier[].sucursal is populated so Admin historical rows show the sucursal each cashier actually worked in."
+}
